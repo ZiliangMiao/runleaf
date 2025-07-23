@@ -1,0 +1,29 @@
+name: Preview docs
+
+on:
+  pull_request_target:
+
+jobs:
+  main:
+    if: github.repository == 'mlflow/mlflow'
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: read # preview_docs.py checks PR statuses
+      pull-requests: write # preview_docs.py comments on PRs
+      actions: write
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/setup-python
+      - name: Install dependencies
+        run: |
+          pip install requests
+      - name: Create preview link
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CIRCLE_TOKEN: ${{ secrets.CIRCLE_TOKEN }}
+        run: |
+          python dev/preview_docs.py \
+            --commit-sha ${{ github.event.pull_request.head.sha }} \
+            --pull-number ${{ github.event.pull_request.number }} \
+            --workflow-run-id ${{ github.run_id }}

@@ -1,0 +1,49 @@
+name: "setup-python"
+description: "Ensures to install a python version that's available on Anaconda"
+inputs:
+  python-version:
+    description: "The python version to install. If unspecified, install the minimum python version mlflow supports."
+    required: false
+outputs:
+  python-version:
+    description: "The installed python version"
+    value: ${{ steps.get-python-version.outputs.version }}
+runs:
+  using: "composite"
+  steps:
+    - name: get-python-version
+      id: get-python-version
+      shell: bash
+      # We used to use `conda search python=3.x` to dynamically fetch the latest available version
+      # in 3.x on Anaconda, but it turned out `conda search` is very slow (takes 40 ~ 50 seconds).
+      # This overhead sums up to a significant amount of delay in the cross version tests
+      # where we trigger more than 100 GitHub Actions runs.
+      run: |
+        python_version="${{ inputs.python-version }}"
+        if [ -z "$python_version" ]; then
+          python_version=$(cat requirements/python-version.txt)
+        fi
+        if [[ "$python_version" == "3.9" ]]; then
+          if [ ${{ runner.os }} == "Windows" ]; then
+            python_version="3.9.13"
+          else
+            python_version="3.9.18"
+          fi
+        elif [[ "$python_version" == "3.10" ]]; then
+          python_version="3.10.14"
+        else
+          echo "Invalid python version: '$python_version'. Must be '3.8', '3.9', or '3.10'."
+          exit 1
+        fi
+        echo "version=$python_version" >> $GITHUB_OUTPUT
+    - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5.5.0
+      with:
+        python-version: ${{ steps.get-python-version.outputs.version }}
+    - uses: astral-sh/setup-uv@f0ec1fc3b38f5e7cd731bb6ce540c5af426746bb # v6.1.0
+      with:
+        version: 0.7.8
+    - run: |
+        # The default `first-index` strategy is too strict. Use `unsafe-first-match` instead.
+        # https://docs.astral.sh/uv/configuration/environment/#uv_index_strategy
+        echo "UV_INDEX_STRATEGY=unsafe-first-match" >> $GITHUB_ENV
+      shell: bash
