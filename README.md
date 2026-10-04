@@ -174,3 +174,11 @@ MLflow is currently maintained by the following core members with significant co
 - [Weichen Xu](https://github.com/WeichenXu123)
 - [Yuki Watanabe](https://github.com/B-Step62)
 - [Tomu Hirata](https://github.com/TomeHirata)
+
+## 2026-10-04: 统一客户端连接配置
+
+- 变更前: 各项目分别维护 `mlflow.env`, 部分工具还依赖其他项目的配置路径.
+- 变更后: `/data/Projects/mlflow/.local/mlflow.env` 显式记录 `MLFLOW_TRACKING_URI=http://192.168.110.148:5050` 和 `DEEPLORE_MLFLOW_ARTIFACT_URI=http://192.168.110.26:5050`, 统一由 deeplore-core 的 `load_env_files()` 读取. 进程环境变量优先, 默认文件位置不受工作目录影响; 显式配置文件参数仍可覆盖默认文件位置.
+- 地址职责: `DEEPLORE_MLFLOW_ARTIFACT_URI` 是 Deeplore 的服务地址记录, 便于查看. 文件上传下载仍遵循 Tracking Server 返回的 artifact 地址, 不用它重写历史地址. 模型注册继续使用 Tracking Server.
+- 项目清理: 删除 deepdet-yolox, deepcls 和 deeplore-deploy 的本地连接文件及 deepcls 的旧配置示例. deepcls, deeplore-deploy 和 deeplore-demo 统一调用 core 加载配置. deepdet-yolox 的上传开关和历史记录频率移入训练配置, 保持上传开启和每 10 个 epoch 记录的默认行为.
+- 变更原因: 服务器迁移只需维护一份客户端连接配置, 避免项目间地址漂移和对当前工作目录的依赖.
