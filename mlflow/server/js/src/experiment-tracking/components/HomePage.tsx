@@ -18,6 +18,7 @@ import { ExperimentEntity } from '../types';
 import Routes from '../routes';
 import { ExperimentPage } from './experiment-page/ExperimentPage';
 import { isExperimentLoggedModelsUIEnabled } from '../../common/utils/FeatureUtils';
+import { ExperimentPageTabName } from '../constants';
 import ExperimentPageTabs from '../pages/experiment-page-tabs/ExperimentPageTabs';
 
 const getExperimentActions = {
@@ -37,7 +38,8 @@ const HomePage = () => {
   const searchRequestId = useRef(getUUID());
 
   const { tabName } = useParams();
-  const shouldRenderTabbedView = isExperimentLoggedModelsUIEnabled() && Boolean(tabName);
+  const shouldRenderTabbedView =
+    tabName === ExperimentPageTabName.Lineage || (isExperimentLoggedModelsUIEnabled() && Boolean(tabName));
 
   const experimentIds = useExperimentIds();
   const experiments = useSelector((state: ReduxState) => values(state.entities.experimentsById));

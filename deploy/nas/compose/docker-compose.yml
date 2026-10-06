@@ -1,0 +1,31 @@
+name: deeplore-mlflow-artifacts
+services:
+  artifacts:
+    image: ghcr.io/mlflow/mlflow:v3.1.4
+    pull_policy: never
+    container_name: deeplore-mlflow-artifacts
+    restart: unless-stopped
+    read_only: true
+    working_dir: /data/Projects/mlflow/.local/artifact-server
+    ports:
+      - "0.0.0.0:5050:5000"
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      XDG_CACHE_HOME: /data/Projects/mlflow/.local/artifact-server/cache
+      TMPDIR: /data/Projects/mlflow/.local/artifact-server/tmp
+      TMP: /data/Projects/mlflow/.local/artifact-server/tmp
+      TEMP: /data/Projects/mlflow/.local/artifact-server/tmp
+    volumes:
+      - /volume1/AI/mlflow/deepdet-yolox:/mlflow/artifacts
+      - /volume1/AI/mlflow/.local/artifact-server:/data/Projects/mlflow/.local/artifact-server
+    command:
+      - /bin/sh
+      - -c
+      - |
+        umask 000
+        exec mlflow server \
+          --host=0.0.0.0 \
+          --port=5000 \
+          --artifacts-only \
+          --artifacts-destination=file:///mlflow/artifacts \
+          --gunicorn-opts="--timeout 600"

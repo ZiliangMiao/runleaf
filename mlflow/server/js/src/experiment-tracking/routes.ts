@@ -60,6 +60,10 @@ export class RoutePaths {
   static get promptDetailsPage() {
     return createMLflowRoutePath('/prompts/:promptName');
   }
+  /** Route path for Deeplore dataset version releases. */
+  static get datasetsPage() {
+    return createMLflowRoutePath('/datasets');
+  }
 }
 
 // Concrete routes and functions for generating parametrized paths
@@ -223,6 +227,11 @@ class Routes {
 
   static getPromptDetailsPageRoute(promptName: string) {
     return generatePath(RoutePaths.promptDetailsPage, { promptName });
+  }
+
+  /** Route for Deeplore dataset version releases. */
+  static get datasetsPageRoute() {
+    return RoutePaths.datasetsPage;
   }
 }
 

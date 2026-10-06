@@ -73,7 +73,7 @@ const Y_AXIS_PARAMS = {
   fixedrange: true,
 };
 
-const getFixedPointValue = (val: string | number, places = 2) => (typeof val === 'number' ? val.toFixed(places) : val);
+const getFixedPointValue = (val: string | number, places = 3) => (typeof val === 'number' ? val.toFixed(places) : val);
 
 /**
  * Implementation of plotly.js chart displaying

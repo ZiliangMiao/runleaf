@@ -1,179 +1,16 @@
-# MLflow: A Machine Learning Lifecycle Platform
+# Deeplore MLflow 本地变更记录
 
-[![Latest Docs](https://img.shields.io/badge/docs-latest-success.svg?style=for-the-badge)](https://mlflow.org/docs/latest/index.html)
-[![Apache 2 License](https://img.shields.io/badge/license-Apache%202-brightgreen.svg?style=for-the-badge&logo=apache)](https://github.com/mlflow/mlflow/blob/master/LICENSE.txt)
-[![Total Downloads](https://img.shields.io/pypi/dw/mlflow?style=for-the-badge&logo=pypi&logoColor=white)](https://pepy.tech/project/mlflow)
-[![Slack](https://img.shields.io/badge/slack-@mlflow--users-CF0E5B.svg?logo=slack&logoColor=white&labelColor=3F0E40&style=for-the-badge)](https://mlflow.org/community/#slack)
-[![Twitter](https://img.shields.io/twitter/follow/MLflow?style=for-the-badge&labelColor=00ACEE&logo=twitter&logoColor=white)](https://twitter.com/MLflow)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/mlflow/mlflow)
+本文件记录本地对 MLflow 代码, 功能和部署方式的修改.
 
-MLflow is an open-source platform, purpose-built to assist machine learning practitioners and teams in handling the complexities of the machine learning process. MLflow focuses on the full lifecycle for machine learning projects, ensuring that each phase is manageable, traceable, and reproducible
+## 2026-10-04: 分离 Tracking Server 与 Artifact Server
 
----
-
-The core components of MLflow are:
-
-- [Experiment Tracking](https://mlflow.org/docs/latest/tracking.html) 📝: A set of APIs to log models, params, and results in ML experiments and compare them using an interactive UI.
-- [Model Packaging](https://mlflow.org/docs/latest/models.html) 📦: A standard format for packaging a model and its metadata, such as dependency versions, ensuring reliable deployment and strong reproducibility.
-- [Model Registry](https://mlflow.org/docs/latest/model-registry.html) 💾: A centralized model store, set of APIs, and UI, to collaboratively manage the full lifecycle of MLflow Models.
-- [Serving](https://mlflow.org/docs/latest/deployment/index.html) 🚀: Tools for seamless model deployment to batch and real-time scoring on platforms like Docker, Kubernetes, Azure ML, and AWS SageMaker.
-- [Evaluation](https://mlflow.org/docs/latest/model-evaluation/index.html) 📊: A suite of automated model evaluation tools, seamlessly integrated with experiment tracking to record model performance and visually compare results across multiple models.
-- [Observability](https://mlflow.org/docs/latest/llms/tracing/index.html) 🔍: Tracing integrations with various GenAI libraries and a Python SDK for manual instrumentation, offering smoother debugging experience and supporting online monitoring.
-
-<img src="https://mlflow.org/img/hero.png" alt="MLflow Hero" width=100%>
-
-## Installation
-
-To install the MLflow Python package, run the following command:
-
-```
-pip install mlflow
-```
-
-Alternatively, you can install MLflow from on different package hosting platforms:
-
-|               |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| PyPI          | [![PyPI - mlflow](https://img.shields.io/pypi/v/mlflow.svg?style=for-the-badge&logo=pypi&logoColor=white&label=mlflow)](https://pypi.org/project/mlflow/) [![PyPI - mlflow-skinny](https://img.shields.io/pypi/v/mlflow-skinny.svg?style=for-the-badge&logo=pypi&logoColor=white&label=mlflow-skinny)](https://pypi.org/project/mlflow-skinny/)                                                                                                                                                                                                                                                                                                                                          |
-| conda-forge   | [![Conda - mlflow](https://img.shields.io/conda/vn/conda-forge/mlflow.svg?style=for-the-badge&logo=anaconda&label=mlflow)](https://anaconda.org/conda-forge/mlflow) [![Conda - mlflow-skinny](https://img.shields.io/conda/vn/conda-forge/mlflow.svg?style=for-the-badge&logo=anaconda&label=mlflow-skinny)](https://anaconda.org/conda-forge/mlflow-skinny)                                                                                                                                                                                                                                                                                                                             |
-| CRAN          | [![CRAN - mlflow](https://img.shields.io/cran/v/mlflow.svg?style=for-the-badge&logo=r&label=mlflow)](https://cran.r-project.org/package=mlflow)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| Maven Central | [![Maven Central - mlflow-client](https://img.shields.io/maven-central/v/org.mlflow/mlflow-client.svg?style=for-the-badge&logo=apache-maven&label=mlflow-client)](https://mvnrepository.com/artifact/org.mlflow/mlflow-client) [![Maven Central - mlflow-parent](https://img.shields.io/maven-central/v/org.mlflow/mlflow-parent.svg?style=for-the-badge&logo=apache-maven&label=mlflow-parent)](https://mvnrepository.com/artifact/org.mlflow/mlflow-parent) [![Maven Central - mlflow-spark](https://img.shields.io/maven-central/v/org.mlflow/mlflow-spark.svg?style=for-the-badge&logo=apache-maven&label=mlflow-spark)](https://mvnrepository.com/artifact/org.mlflow/mlflow-spark) |
-
-## Documentation 📘
-
-Official documentation for MLflow can be found at [here](https://mlflow.org/docs/latest/index.html).
-
-## Running Anywhere 🌐
-
-You can run MLflow on many different environments, including local development, Amazon SageMaker, AzureML, and Databricks. Please refer to [this guidance](https://mlflow.org/docs/latest/index.html#running-mlflow-anywhere) for how to setup MLflow on your environment.
-
-## Usage
-
-### Experiment Tracking ([Doc](https://mlflow.org/docs/latest/tracking.html))
-
-The following examples trains a simple regression model with scikit-learn, while enabling MLflow's [autologging](https://mlflow.org/docs/latest/tracking/autolog.html) feature for experiment tracking.
-
-```python
-import mlflow
-
-from sklearn.model_selection import train_test_split
-from sklearn.datasets import load_diabetes
-from sklearn.ensemble import RandomForestRegressor
-
-# Enable MLflow's automatic experiment tracking for scikit-learn
-mlflow.sklearn.autolog()
-
-# Load the training dataset
-db = load_diabetes()
-X_train, X_test, y_train, y_test = train_test_split(db.data, db.target)
-
-rf = RandomForestRegressor(n_estimators=100, max_depth=6, max_features=3)
-# MLflow triggers logging automatically upon model fitting
-rf.fit(X_train, y_train)
-```
-
-Once the above code finishes, run the following command in a separate terminal and access the MLflow UI via the printed URL. An MLflow **Run** should be automatically created, which tracks the training dataset, hyper parameters, performance metrics, the trained model, dependencies, and even more.
-
-```
-mlflow ui
-```
-
-### Serving Models ([Doc](https://mlflow.org/docs/latest/deployment/index.html))
-
-You can deploy the logged model to a local inference server by a one-line command using the MLflow CLI. Visit the documentation for how to deploy models to other hosting platforms.
-
-```bash
-mlflow models serve --model-uri runs:/<run-id>/model
-```
-
-### Evaluating Models ([Doc](https://mlflow.org/docs/latest/model-evaluation/index.html))
-
-The following example runs automatic evaluation for question-answering tasks with several built-in metrics.
-
-```python
-import mlflow
-import pandas as pd
-
-# Evaluation set contains (1) input question (2) model outputs (3) ground truth
-df = pd.DataFrame(
-    {
-        "inputs": ["What is MLflow?", "What is Spark?"],
-        "outputs": [
-            "MLflow is an innovative fully self-driving airship powered by AI.",
-            "Sparks is an American pop and rock duo formed in Los Angeles.",
-        ],
-        "ground_truth": [
-            "MLflow is an open-source platform for managing the end-to-end machine learning (ML) "
-            "lifecycle.",
-            "Apache Spark is an open-source, distributed computing system designed for big data "
-            "processing and analytics.",
-        ],
-    }
-)
-eval_dataset = mlflow.data.from_pandas(
-    df, predictions="outputs", targets="ground_truth"
-)
-
-# Start an MLflow Run to record the evaluation results to
-with mlflow.start_run(run_name="evaluate_qa"):
-    # Run automatic evaluation with a set of built-in metrics for question-answering models
-    results = mlflow.evaluate(
-        data=eval_dataset,
-        model_type="question-answering",
-    )
-
-print(results.tables["eval_results_table"])
-```
-
-### Observability ([Doc](https://mlflow.org/docs/latest/llms/tracing/index.html))
-
-MLflow Tracing provides LLM observability for various GenAI libraries such as OpenAI, LangChain, LlamaIndex, DSPy, AutoGen, and more. To enable auto-tracing, call `mlflow.xyz.autolog()` before running your models. Refer to the documentation for customization and manual instrumentation.
-
-```python
-import mlflow
-from openai import OpenAI
-
-# Enable tracing for OpenAI
-mlflow.openai.autolog()
-
-# Query OpenAI LLM normally
-response = OpenAI().chat.completions.create(
-    model="gpt-4o-mini",
-    messages=[{"role": "user", "content": "Hi!"}],
-    temperature=0.1,
-)
-```
-
-Then navigate to the "Traces" tab in the MLflow UI to find the trace records OpenAI query.
-
-## Community
-
-- For help or questions about MLflow usage (e.g. "how do I do X?") visit the [docs](https://mlflow.org/docs/latest/index.html)
-  or [Stack Overflow](https://stackoverflow.com/questions/tagged/mlflow).
-- Alternatively, you can ask the question to our AI-powered chat bot. Visit the doc website and click on the **"Ask AI"** button at the right bottom to start chatting with the bot.
-- To report a bug, file a documentation issue, or submit a feature request, please [open a GitHub issue](https://github.com/mlflow/mlflow/issues/new/choose).
-- For release announcements and other discussions, please subscribe to our mailing list (mlflow-users@googlegroups.com)
-  or join us on [Slack](https://mlflow.org/slack).
-
-## Contributing
-
-We happily welcome contributions to MLflow! We are also seeking contributions to items on the
-[MLflow Roadmap](https://github.com/mlflow/mlflow/milestone/3). Please see our
-[contribution guide](CONTRIBUTING.md) to learn more about contributing to MLflow.
-
-## Core Members
-
-MLflow is currently maintained by the following core members with significant contributions from hundreds of exceptionally talented community members.
-
-- [Ben Wilson](https://github.com/BenWilson2)
-- [Corey Zumar](https://github.com/dbczumar)
-- [Daniel Lok](https://github.com/daniellok-db)
-- [Gabriel Fu](https://github.com/gabrielfu)
-- [Harutaka Kawamura](https://github.com/harupy)
-- [Serena Ruan](https://github.com/serena-ruan)
-- [Weichen Xu](https://github.com/WeichenXu123)
-- [Yuki Watanabe](https://github.com/B-Step62)
-- [Tomu Hirata](https://github.com/TomeHirata)
+- 变更前: 网络附加存储 (Network Attached Storage, NAS) 上的 `192.168.110.26:5050` 同时提供 MLflow 页面, Tracking API 和 artifacts 上传下载. SQLite 数据库和 artifacts 均保存在 NAS.
+- 变更后: Tracking Server, SQLite 数据库及定制前后端迁到本地训练服务器 `192.168.110.148:5050`. NAS `192.168.110.26:5050` 使用官方 MLflow 3.1.4 的 `--artifacts-only` 模式, 继续读写原 artifacts 目录 `/volume1/AI/mlflow/deepdet-yolox`. 本地通过 HTTP 访问独立 Artifact Server.
+- 变更原因: 本地开发和部署定制功能更直接, 后续 Benchmark 发布可访问本地数据仓库并执行 Data Version Control (DVC) 和 Git 操作. 大文件继续使用 NAS 存储, artifacts 服务无需随页面和业务代码修改而重新部署.
+- 迁移内容: 保留历史 experiment, run 和模型版本的身份, 更新其 artifact 地址引用, 切换 deepdet-yolox 和 deepcls 的客户端地址及共享存储身份. 本地数据库位于 `/data/Projects/mlflow/.local/tracking-server/db/mlflow.db`, 本地 MLflow 数据和管理状态统一保存在 `/data/Projects/mlflow`.
+- 兼容性: 使用显式 HTTP artifact 地址, 避免 MLflow 3.1.4 在 SQLite 后端进程中解析 `mlflow-artifacts://` 地址失败.
+- 验证结果: 迁移完成. 数据库完整性及历史表记录数量检查通过, 保留 14 个 experiments, 128 个 runs 和 1,396,742 条指标记录. 原生客户端上传, 历史文件下载及两个模型版本描述文件的下载和内容校验通过. 临时验证文件已清理.
+- 回退准备: NAS 原 Tracking Server 容器已停止并保留. 本地备份和验证记录位于 `/data/Projects/mlflow/.local/migrations/20261004T084518Z`, NAS 最终数据库备份和原部署配置位于 `/volume1/AI/mlflow/.local/migrations/20261004T084518Z`.
 
 ## 2026-10-04: 统一客户端连接配置
 
@@ -182,3 +19,12 @@ MLflow is currently maintained by the following core members with significant co
 - 地址职责: `DEEPLORE_MLFLOW_ARTIFACT_URI` 是 Deeplore 的服务地址记录, 便于查看. 文件上传下载仍遵循 Tracking Server 返回的 artifact 地址, 不用它重写历史地址. 模型注册继续使用 Tracking Server.
 - 项目清理: 删除 deepdet-yolox, deepcls 和 deeplore-deploy 的本地连接文件及 deepcls 的旧配置示例. deepcls, deeplore-deploy 和 deeplore-demo 统一调用 core 加载配置. deepdet-yolox 的上传开关和历史记录频率移入训练配置, 保持上传开启和每 10 个 epoch 记录的默认行为.
 - 变更原因: 服务器迁移只需维护一份客户端连接配置, 避免项目间地址漂移和对当前工作目录的依赖.
+
+## 2026-10-06: 简化 Dataset 页面和明确版本记录
+
+- 列表展示: 顶部保留 `Dataset`, `Latest version`, `On disk`. 每个数据集只展示一个最新版本, 优先使用最近一次 MLflow 登记记录的版本; 没有登记记录时兼容显示本地 `metadata.yaml` 的 `version`, 该回退值不代表发布已在 MLflow 完成.
+- 元数据展示: 详情默认展开并保持只读, `Metadata` 标题旁通过版本下拉列表切换可读取的元数据. 已登记版本使用对应发布快照, 同版本不混入本地文件的新改动; 尚无对应快照时可查看当前本地元数据. `Source`, `Directory`, `Metrics`, `Hashes`, `Changelog` 随版本一起切换, 其中 `Changelog` 默认折叠. `Release a new version` 表单保持可见, 发布版本选择与元数据浏览互相独立.
+- 哈希展示: `Hashes` 始终展开 `train`, `val`, `test` 三行, 显示完整哈希, 缺失值显示 `null`. 已登记版本读取该快照的哈希, 本地元数据读取文件中保存的哈希; 二者都不代表对当前文件实时计算的结果.
+- 历史展示: 只有 `Changelog` 说明而没有元数据快照的历史版本不能用于回看元数据. 页面不提供 `Releases` 模块, 版本查询仅用于元数据版本选择.
+- 修改流程: 页面禁止直接编辑元数据. 需要调整数据集信息时, 在本地数据仓库的 `data/<dataset>/metadata.yaml` 中修改相应描述或配置, 再在 MLflow 选择下一版本并填写变更说明. 可先使用 `Check` 验证, 再通过 `Release` 确认发布, 将修改纳入新版本的发布快照.
+- 发布字段: 不手工伪造 `version` 或 `hashes`. 发布流程执行 DVC 跟踪后生成各数据划分哈希, 自动写入所选版本和哈希, 并向 `changelog` 追加本次变更说明. 随后提交, 创建标签并推送数据和 Git 记录, 最后从标签对应的提交读取元数据并登记到 MLflow. 仅修改本地文件或通过 `Check` 不构成发布完成.

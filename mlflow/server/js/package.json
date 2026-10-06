@@ -30,6 +30,7 @@
     "@apollo/client": "^3.6.9",
     "@apollo/client-3-12": "npm:@apollo/client@^3.12.7",
     "@craco/craco": "7.0.0-alpha.0",
+    "@dagrejs/dagre": "1.1.5",
     "@databricks/design-system": "file:./vendor/design-system",
     "@emotion/cache": "^11.11.0",
     "@emotion/react": "^11.11.3",

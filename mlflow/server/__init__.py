@@ -133,6 +133,14 @@ def serve_get_logged_model_artifact(model_id: str):
     return get_logged_model_artifact_handler(model_id)
 
 
+# Deeplore: dataset version registry and release endpoints.
+from mlflow.deeplore.dataset_api import register_dataset_routes  # noqa: E402
+from mlflow.deeplore.evaluation_api import register_evaluation_routes  # noqa: E402
+
+register_dataset_routes(app)
+register_evaluation_routes(app)
+
+
 # We expect the react app to be built assuming it is hosted at /static-files, so that requests for
 # CSS/JS resources will be made to e.g. /static-files/main.css and we can handle them here.
 # The files are hashed based on source code, so ok to send Cache-Control headers via max_age.

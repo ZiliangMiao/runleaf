@@ -11,6 +11,7 @@ import { RenameRunModal } from '../modals/RenameRunModal';
 import { RunViewArtifactTab } from './RunViewArtifactTab';
 import { RunViewHeader } from './RunViewHeader';
 import { RunViewOverview } from './RunViewOverview';
+import { RunViewEvaluations } from './RunViewEvaluations';
 import { useRunDetailsPageData } from './hooks/useRunDetailsPageData';
 import { useRunViewActiveTab } from './useRunViewActiveTab';
 import { ReduxState } from '../../../redux-types';
@@ -101,6 +102,8 @@ export const RunPage = () => {
       return null;
     }
     switch (activeTab) {
+      case RunPageTabName.EVALUATIONS:
+        return <RunViewEvaluations runUuid={runUuid} experimentId={experimentId} />;
       case RunPageTabName.MODEL_METRIC_CHARTS:
         return (
           <RunViewMetricCharts

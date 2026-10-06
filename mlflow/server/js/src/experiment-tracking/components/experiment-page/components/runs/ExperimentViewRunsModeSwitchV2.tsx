@@ -104,6 +104,14 @@ export const ExperimentViewRunsModeSwitchV2 = ({ experimentId = '', activeTab }:
             </Link>
           </NavigationMenu.Item>
         )}
+        <NavigationMenu.Item key="LINEAGE" active={activeTab === ExperimentPageTabName.Lineage}>
+          <Link to={Routes.getExperimentPageTabRoute(experimentId, ExperimentPageTabName.Lineage)}>
+            <FormattedMessage
+              defaultMessage="Lineage"
+              description="A tab showing parent relationships between experiment runs"
+            />
+          </Link>
+        </NavigationMenu.Item>
         <NavigationMenu.Item key="ARTIFACT">{evaluationTabLink}</NavigationMenu.Item>
         {shouldEnableTracingUI() && (
           <NavigationMenu.Item key="TRACES">

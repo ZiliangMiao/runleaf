@@ -136,6 +136,7 @@ export const HOUR_IN_MILLISECONDS = 1000 * 60 * 60; // 1 hour
 
 export enum ExperimentPageTabName {
   Models = 'models',
+  Lineage = 'lineage',
   EvaluationMonitoring = 'evaluation-monitoring',
   Datasets = 'datasets',
   LabelingSessions = 'labeling-sessions',

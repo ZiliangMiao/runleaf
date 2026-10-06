@@ -1,0 +1,407 @@
+"""Released dataset versions and release jobs, stored in the tracking database.
+
+Three tables live beside MLflow's own in the same database. They are created on
+first use and are NOT part of MLflow's Alembic history, so the schema revision
+MLflow verifies at startup is untouched and stock MLflow tooling keeps working
+against the database.
+
+- ``deeplore_dataset_versions``: one row per released ``(name, version)``,
+  written by step 8 of a release.
+- ``deeplore_dataset_changelog``: historical changes, including versions that
+  predate the release workflow and have no verified release snapshot.
+- ``deeplore_dataset_release_jobs``: one row per check or release started from
+  the UI, updated by the background worker so any server worker can report it.
+
+Every function takes the tracking server's ``SqlAlchemyStore`` and uses its
+engine and managed sessions.
+
+Sections:
+- Tables: release, changelog and job records.
+- Changelog: persist and list historical changes without inventing releases.
+- Versions: register and list released versions.
+- Jobs: create, update and read release jobs.
+
+Verb paradigm: ``create_*`` / ``update_*`` / ``register_*`` write, ``get_*``
+returns one row or ``None``, ``list_*`` returns many; all return plain dicts.
+"""
+
+import json
+import time
+import uuid
+from typing import Any, Optional
+
+import sqlalchemy
+from sqlalchemy import BigInteger, Boolean, Column, Integer, String, Text
+from sqlalchemy.orm import declarative_base
+
+from mlflow.deeplore.dataset_release import build_metadata, parse_changelog, parse_version
+from mlflow.exceptions import MlflowException
+from mlflow.protos.databricks_pb2 import INVALID_PARAMETER_VALUE
+
+# ===== Tables =====
+
+_Base = declarative_base()
+
+JOB_PENDING = "pending"
+JOB_RUNNING = "running"
+JOB_SUCCEEDED = "succeeded"
+JOB_FAILED = "failed"
+JOB_ACTIVE: tuple[str, ...] = (JOB_PENDING, JOB_RUNNING)
+
+
+class SqlDatasetVersion(_Base):
+    """One released dataset version as registered by step 8 of a release.
+
+    Owns the released metadata snapshot and its git coordinates. It does not
+    own the dataset's files or any link to MLflow runs.
+    """
+
+    __tablename__ = "deeplore_dataset_versions"
+
+    name = Column(String(256), primary_key=True)
+    version = Column(String(64), primary_key=True)
+    change = Column(Text, nullable=False)
+    # JSON: split name -> directory hash or null.
+    hashes = Column(Text, nullable=False)
+    # JSON: metadata.yaml as committed under the release tag.
+    metadata_json = Column(Text, nullable=False)
+    git_repo = Column(String(1024), nullable=False)
+    git_tag = Column(String(512), nullable=False)
+    git_commit = Column(String(64), nullable=False)
+    created_at = Column(BigInteger, nullable=False)
+
+    def to_dict(self) -> dict:
+        """Return the row as a JSON-ready dict."""
+        return {
+            "name": self.name,
+            "version": self.version,
+            "change": self.change,
+            "hashes": json.loads(self.hashes),
+            "metadata": json.loads(self.metadata_json),
+            "git_repo": self.git_repo,
+            "git_tag": self.git_tag,
+            "git_commit": self.git_commit,
+            "created_at": self.created_at,
+        }
+
+
+class SqlDatasetReleaseJob(_Base):
+    """One check or release run started from the UI.
+
+    Owns the run's progress as reported by its worker process. It does not
+    own the release outcome, which is the ``deeplore_dataset_versions`` row.
+    """
+
+    __tablename__ = "deeplore_dataset_release_jobs"
+
+    job_id = Column(String(32), primary_key=True)
+    repo = Column(String(1024), nullable=False)
+    name = Column(String(256), nullable=False)
+    version = Column(String(64), nullable=False)
+    change = Column(Text, nullable=False)
+    dry_run = Column(Boolean, nullable=False)
+    status = Column(String(16), nullable=False)
+    pid = Column(Integer)
+    # JSON: step number -> running / done / failed / skipped.
+    steps = Column(Text, nullable=False)
+    # JSON: list of {level, check, message}.
+    findings = Column(Text, nullable=False)
+    log = Column(Text, nullable=False)
+    error = Column(Text)
+    created_at = Column(BigInteger, nullable=False)
+    updated_at = Column(BigInteger, nullable=False)
+
+    def to_dict(self) -> dict:
+        """Return the row as a JSON-ready dict."""
+        return {
+            "job_id": self.job_id,
+            "repo": self.repo,
+            "name": self.name,
+            "version": self.version,
+            "change": self.change,
+            "dry_run": self.dry_run,
+            "status": self.status,
+            "pid": self.pid,
+            "steps": json.loads(self.steps),
+            "findings": json.loads(self.findings),
+            "log": self.log,
+            "error": self.error,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+
+class SqlDatasetChangelog(_Base):
+    """One historical change, independent of a verified release snapshot.
+
+    Owns only the dataset name, version and change text. Git coordinates and
+    split hashes belong exclusively to released version records.
+    """
+
+    __tablename__ = "deeplore_dataset_changelog"
+
+    name = Column(String(256), primary_key=True)
+    version = Column(String(64), primary_key=True)
+    change = Column(Text, nullable=False)
+
+
+_initialized_engines: set[int] = set()
+
+
+def _session(store: Any) -> Any:
+    """Open a managed session, creating the tables on first use per engine."""
+    if id(store.engine) not in _initialized_engines:
+        _Base.metadata.create_all(store.engine, checkfirst=True)
+        _initialized_engines.add(id(store.engine))
+    return store.ManagedSessionMaker()
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+# ===== Changelog =====
+
+
+def _register_changelog(session: Any, name: str, changes: dict[str, str]) -> None:
+    for version, change in changes.items():
+        row = session.get(SqlDatasetChangelog, (name, version))
+        if row is None:
+            session.add(SqlDatasetChangelog(name=name, version=version, change=change))
+        else:
+            row.change = change
+
+
+def register_dataset_changelog(store: Any, name: str, changelog: list[dict[str, str]]) -> None:
+    """Persist historical changes without registering unverified releases.
+
+    Args:
+        store: The tracking server's SQL store.
+        name: Dataset name.
+        changelog: Version-to-change mappings from the dataset metadata.
+
+    Raises:
+        ValueError: If a version or its change text is invalid or conflicting.
+    """
+    changes = parse_changelog(changelog)
+    with _session(store) as session:
+        _register_changelog(session, name, changes)
+
+
+def list_dataset_changelogs(store: Any) -> dict[str, list[dict[str, str]]]:
+    """Return persisted changes by dataset, in ascending semantic version order.
+
+    Args:
+        store: The tracking server's SQL store.
+
+    Returns:
+        Dataset names mapped to metadata-compatible changelog lists.
+    """
+    with _session(store) as session:
+        rows = session.execute(sqlalchemy.select(SqlDatasetChangelog)).scalars().all()
+        changes: dict[str, list[dict[str, str]]] = {}
+        for row in sorted(rows, key=lambda row: (row.name, parse_version(row.version))):
+            changes.setdefault(row.name, []).append({row.version: row.change})
+        return changes
+
+
+# ===== Versions =====
+
+
+def register_dataset_version(store: Any, record: dict) -> dict:
+    """Insert or refresh one released version.
+
+    Idempotent on ``(name, version)`` so a resumed release can register again.
+
+    Args:
+        store: The tracking server's SQL store.
+        record: ``name``, ``version``, ``change``, ``hashes``, ``metadata``,
+            ``git_repo``, ``git_tag`` and ``git_commit``.
+
+    Returns:
+        The stored row.
+
+    Raises:
+        MlflowException: If a required field is missing or empty.
+    """
+    required = (
+        "name",
+        "version",
+        "change",
+        "hashes",
+        "metadata",
+        "git_repo",
+        "git_tag",
+        "git_commit",
+    )
+    missing = [key for key in required if record.get(key) in (None, "")]
+    if missing:
+        raise MlflowException(
+            f"dataset version record misses field(s): {', '.join(missing)}",
+            error_code=INVALID_PARAMETER_VALUE,
+        )
+    if not isinstance(record["metadata"], dict):
+        raise MlflowException("metadata must be a mapping", error_code=INVALID_PARAMETER_VALUE)
+    metadata = build_metadata(record["metadata"])
+    try:
+        changes = parse_changelog(metadata.get("changelog"))
+    except ValueError as error:
+        raise MlflowException(str(error), error_code=INVALID_PARAMETER_VALUE) from error
+    with _session(store) as session:
+        row = session.get(SqlDatasetVersion, (record["name"], record["version"]))
+        if row is None:
+            row = SqlDatasetVersion(
+                name=record["name"], version=record["version"], created_at=_now_ms()
+            )
+            session.add(row)
+        row.change = record["change"]
+        row.hashes = json.dumps(record["hashes"])
+        row.metadata_json = json.dumps(metadata)
+        row.git_repo = record["git_repo"]
+        row.git_tag = record["git_tag"]
+        row.git_commit = record["git_commit"]
+        _register_changelog(session, record["name"], changes)
+        session.flush()
+        return row.to_dict()
+
+
+def list_dataset_versions(store: Any, name: Optional[str] = None) -> list[dict]:
+    """List released versions, newest first.
+
+    Args:
+        store: The tracking server's SQL store.
+        name: Restrict to one dataset; ``None`` lists every dataset.
+
+    Returns:
+        Version rows ordered by registration time, newest first.
+    """
+    with _session(store) as session:
+        query = sqlalchemy.select(SqlDatasetVersion).order_by(SqlDatasetVersion.created_at.desc())
+        if name is not None:
+            query = query.where(SqlDatasetVersion.name == name)
+        return [row.to_dict() for row in session.execute(query).scalars()]
+
+
+# ===== Jobs =====
+
+
+def create_release_job(
+    store: Any, repo: str, name: str, version: str, change: str, dry_run: bool
+) -> dict:
+    """Record a new job, refusing a second active one for the same repository.
+
+    Args:
+        store: The tracking server's SQL store.
+        repo: Repository the job runs in.
+        name: Dataset name.
+        version: Requested version.
+        change: One-line change description.
+        dry_run: Whether the job only checks.
+
+    Returns:
+        The new job row, status ``pending``.
+
+    Raises:
+        MlflowException: If the repository already has a pending or running job.
+    """
+    with _session(store) as session:
+        active = (
+            session.execute(
+                sqlalchemy.select(SqlDatasetReleaseJob)
+                .where(SqlDatasetReleaseJob.repo == repo)
+                .where(SqlDatasetReleaseJob.status.in_(JOB_ACTIVE))
+            )
+            .scalars()
+            .first()
+        )
+        if active is not None:
+            raise MlflowException(
+                f"job {active.job_id} ({active.name} {active.version}) is still {active.status} "
+                f"in {repo}",
+                error_code=INVALID_PARAMETER_VALUE,
+            )
+        now = _now_ms()
+        row = SqlDatasetReleaseJob(
+            job_id=uuid.uuid4().hex,
+            repo=repo,
+            name=name,
+            version=version,
+            change=change,
+            dry_run=dry_run,
+            status=JOB_PENDING,
+            steps="{}",
+            findings="[]",
+            log="",
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(row)
+        session.flush()
+        return row.to_dict()
+
+
+def update_release_job(
+    store: Any,
+    job_id: str,
+    status: Optional[str] = None,
+    pid: Optional[int] = None,
+    step: Optional[tuple[int, str]] = None,
+    findings: Optional[list[dict]] = None,
+    log_line: Optional[str] = None,
+    error: Optional[str] = None,
+) -> None:
+    """Apply a worker's progress report to its job row.
+
+    Args:
+        store: The tracking server's SQL store.
+        job_id: The job to update.
+        status: New job status.
+        pid: Worker process id.
+        step: ``(step number, step status)`` to merge into ``steps``.
+        findings: Check findings, replacing the stored list.
+        log_line: Text appended to the log.
+        error: Failure message.
+    """
+    with _session(store) as session:
+        row = session.get(SqlDatasetReleaseJob, job_id)
+        if row is None:
+            return
+        if status is not None:
+            row.status = status
+        if pid is not None:
+            row.pid = pid
+        if step is not None:
+            row.steps = json.dumps({**json.loads(row.steps), str(step[0]): step[1]})
+        if findings is not None:
+            row.findings = json.dumps(findings)
+        if log_line is not None:
+            row.log = row.log + log_line + "\n"
+        if error is not None:
+            row.error = error
+        row.updated_at = _now_ms()
+
+
+def get_release_job(store: Any, job_id: str) -> Optional[dict]:
+    """Return one job row, or ``None`` if the id is unknown."""
+    with _session(store) as session:
+        row = session.get(SqlDatasetReleaseJob, job_id)
+        return row.to_dict() if row is not None else None
+
+
+def list_release_jobs(store: Any, name: Optional[str] = None, limit: int = 20) -> list[dict]:
+    """List recent jobs, newest first, without their logs.
+
+    Args:
+        store: The tracking server's SQL store.
+        name: Restrict to one dataset; ``None`` lists every dataset.
+        limit: Maximum number of jobs.
+
+    Returns:
+        Job rows with ``log`` blanked to keep the listing small.
+    """
+    with _session(store) as session:
+        query = sqlalchemy.select(SqlDatasetReleaseJob)
+        if name is not None:
+            query = query.where(SqlDatasetReleaseJob.name == name)
+        query = query.order_by(SqlDatasetReleaseJob.created_at.desc()).limit(limit)
+        return [{**row.to_dict(), "log": ""} for row in session.execute(query).scalars()]

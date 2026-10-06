@@ -10,7 +10,9 @@ import {
   shouldEnableTracingUI,
   shouldUseRenamedUnifiedTracesTab,
 } from '../../../../../common/utils/FeatureUtils';
-import { MONITORING_BETA_EXPIRATION_DATE } from '../../../../constants';
+import { MONITORING_BETA_EXPIRATION_DATE, ExperimentPageTabName } from '../../../../constants';
+import { useNavigate } from '../../../../../common/utils/RoutingUtils';
+import Routes from '../../../../routes';
 import { useExperimentPageSearchFacets } from '../../hooks/useExperimentPageSearchFacets';
 
 export interface ExperimentViewRunsModeSwitchProps {
@@ -31,6 +33,7 @@ export const ExperimentViewRunsModeSwitch = ({
   runsAreGrouped,
   hideBorder = true,
 }: ExperimentViewRunsModeSwitchProps) => {
+  const navigate = useNavigate();
   const [, experimentIds] = useExperimentPageSearchFacets();
   const { theme } = useDesignSystemTheme();
   const [viewMode, setViewModeInURL] = useExperimentPageViewMode();
@@ -55,6 +58,10 @@ export const ExperimentViewRunsModeSwitch = ({
       }}
       activeKey={activeTab}
       onChange={(tabKey) => {
+        if (tabKey === 'LINEAGE' && singleExperimentId) {
+          navigate(Routes.getExperimentPageTabRoute(singleExperimentId, ExperimentPageTabName.Lineage));
+          return;
+        }
         const newValue = tabKey as ExperimentViewRunsCompareMode | 'RUNS';
 
         if (activeTab === newValue) {
@@ -91,6 +98,17 @@ export const ExperimentViewRunsModeSwitch = ({
               />
               <PreviewBadge />
             </span>
+          }
+        />
+      )}
+      {singleExperimentId && (
+        <LegacyTabs.TabPane
+          key="LINEAGE"
+          tab={
+            <FormattedMessage
+              defaultMessage="Lineage"
+              description="A tab showing parent relationships between experiment runs"
+            />
           }
         />
       )}
