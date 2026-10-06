@@ -1,0 +1,59 @@
+# Tracking server with dataset releases: an image with git + dvc
+# (Dockerfile.datasets), the dataset repository mounted read-write, and the
+# credentials both pushes need.
+#
+#   docker compose -f deploy/local/docker-compose.yml up -d
+#
+# Roll back to the stock image and the previous UI build:
+#   docker compose -f deploy/local/docker-compose.before-datasets.20261006T101746Z.yml up -d
+#   rm -rf mlflow/server/js/build && cp -a dist/ui-builds/20261006T101746Z-before-datasets mlflow/server/js/build
+name: deeplore-mlflow
+services:
+  tracking:
+    build:
+      context: .
+      dockerfile: Dockerfile.datasets
+    image: deeplore-mlflow-tracking:3.1.4-datasets
+    container_name: deeplore-mlflow-tracking
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    working_dir: /data/Projects/mlflow/.local/tracking-server
+    ports:
+      - "0.0.0.0:5050:5000"
+    environment:
+      PYTHONPATH: /opt/deeplore-mlflow
+      PYTHONDONTWRITEBYTECODE: "1"
+      MLFLOW_TRACKING_URI: http://192.168.110.148:5050
+      MLFLOW_REGISTRY_URI: http://192.168.110.148:5050
+      XDG_CACHE_HOME: /data/Projects/mlflow/.local/tracking-server/cache
+      TMPDIR: /data/Projects/mlflow/.local/tracking-server/tmp
+      TMP: /data/Projects/mlflow/.local/tracking-server/tmp
+      TEMP: /data/Projects/mlflow/.local/tracking-server/tmp
+      # --- dataset releases ---
+      HOME: /home/bld                                            # ssh keys and git identity
+      # dvc defaults to /var/tmp/dvc, which the read-only root filesystem refuses.
+      DVC_SITE_CACHE_DIR: /data/Projects/mlflow/.local/tracking-server/cache/dvc
+      DEEPLORE_DATASET_REPOS: /data/Projects/deepdet-dataset     # os.pathsep-separated roots
+      # The repo's pre-commit hook needs the dataset toolchain, absent from this image.
+      DEEPLORE_DATASET_SKIP_GIT_HOOKS: "true"
+    volumes:
+      - /data/Projects/deeplore-mlflow:/opt/deeplore-mlflow:ro
+      - /data/Projects/mlflow/.local/tracking-server:/data/Projects/mlflow/.local/tracking-server
+      # --- dataset releases ---
+      # Same path as on the host: metadata.yaml and the registry record absolute paths.
+      - /data/Projects/deepdet-dataset:/data/Projects/deepdet-dataset
+      - /home/bld/.ssh:/home/bld/.ssh:ro
+      - /home/bld/.gitconfig:/home/bld/.gitconfig:ro
+    command:
+      - /bin/sh
+      - -c
+      - |
+        umask 000
+        exec mlflow server \
+          --host=0.0.0.0 \
+          --port=5000 \
+          --backend-store-uri=sqlite:////data/Projects/mlflow/.local/tracking-server/db/mlflow.db?timeout=30 \
+          --no-serve-artifacts \
+          --default-artifact-root=http://192.168.110.26:5050/api/2.0/mlflow-artifacts/artifacts \
+          --gunicorn-opts="--timeout 600"

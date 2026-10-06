@@ -121,3 +121,12 @@ a.md
 
 # Ignore a gunicorn config file
 gunicorn.conf.py
+
+# Local feature validation
+/tests/
+
+# Local deployment runtime, build assets, and rollback snapshots
+/deploy/nas/runtime/
+/deploy/nas/*.tar.gz
+/deploy/nas/compose/ui-*/
+/deploy/**/docker-compose.before-*.yml

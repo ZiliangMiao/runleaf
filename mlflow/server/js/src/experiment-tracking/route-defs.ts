@@ -71,4 +71,9 @@ export const getRouteDefs = () => [
     pageId: 'mlflow.metric.details',
   },
   ...getPromptPagesRouteDefs(),
+  {
+    path: RoutePaths.datasetsPage,
+    element: createLazyRouteElement(() => import('./pages/datasets/DatasetsPage')),
+    pageId: 'mlflow.datasets',
+  },
 ];

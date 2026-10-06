@@ -1,0 +1,20 @@
+# Tracking server image able to release datasets: the stock MLflow image plus
+# git, an ssh client and dvc.
+#
+#   docker build -f deploy/local/Dockerfile.datasets -t deeplore-mlflow-tracking:3.1.4-datasets deploy/local
+FROM ghcr.io/mlflow/mlflow:v3.1.4
+
+# The base is Debian 11, whose live security pool no longer serves the package
+# versions this image was built against. Its sources.list keeps the snapshot it
+# was built from as comments; installing from that snapshot stays consistent.
+# dvc gets its own venv so its dependency pins cannot disturb MLflow's.
+# The ssh client refuses to run for a uid without a passwd entry, so the uid
+# the container runs as (1000, the owner of the dataset repository) is created.
+RUN sed -i -e '/^deb /d' -e 's|^# deb |deb |' /etc/apt/sources.list \
+    && apt-get -o Acquire::Check-Valid-Until=false update \
+    && apt-get install -y --no-install-recommends git openssh-client \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m venv /opt/dvc \
+    && /opt/dvc/bin/pip install --no-cache-dir "dvc[ssh]==3.67.1" \
+    && ln -s /opt/dvc/bin/dvc /usr/local/bin/dvc \
+    && useradd --uid 1000 --create-home --home-dir /home/bld bld

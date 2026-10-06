@@ -1,4 +1,4 @@
-import { InfoPopover, LegacyTabs, useDesignSystemTheme, Typography } from '@databricks/design-system';
+import { LegacyTabs } from '@databricks/design-system';
 import { FormattedMessage } from 'react-intl';
 import { useNavigate, useParams } from '../../../common/utils/RoutingUtils';
 import Routes from '../../routes';
@@ -15,7 +15,6 @@ const TABS_WITHOUT_MARGIN = [RunPageTabName.ARTIFACTS, RunPageTabName.EVALUATION
 export const RunViewModeSwitch = () => {
   const { experimentId, runUuid } = useParams<{ runUuid: string; experimentId: string }>();
   const navigate = useNavigate();
-  const { theme } = useDesignSystemTheme();
   const currentTab = useRunViewActiveTab();
   const [removeTabMargin, setRemoveTabMargin] = useState(TABS_WITHOUT_MARGIN.includes(currentTab));
 
@@ -41,6 +40,16 @@ export const RunViewModeSwitch = () => {
           <FormattedMessage defaultMessage="Overview" description="Run details page > tab selector > overview tab" />
         }
         key={RunPageTabName.OVERVIEW}
+      />
+
+      <LegacyTabs.TabPane
+        tab={
+          <FormattedMessage
+            defaultMessage="Evaluations"
+            description="Run details page > tab selector > evaluations tab"
+          />
+        }
+        key={RunPageTabName.EVALUATIONS}
       />
 
       <LegacyTabs.TabPane

@@ -1,0 +1,21 @@
+services:
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v3.1.4
+    pull_policy: never
+    container_name: mlflow-server
+    restart: unless-stopped
+    ports:
+      - "5050:5000"
+    volumes:
+      - /volume1/AI/mlflow/db:/mlflow/db
+      - /volume1/AI/mlflow/deepdet-yolox:/mlflow/artifacts
+      - /volume1/AI/mlflow/compose/ui-lineage:/usr/local/lib/python3.10/site-packages/mlflow/server/js/build:ro
+    command:
+      - mlflow
+      - server
+      - --host=0.0.0.0
+      - --port=5000
+      - --backend-store-uri=sqlite:////mlflow/db/mlflow.db?timeout=30
+      - --artifacts-destination=file:///mlflow/artifacts
+      - --serve-artifacts
+      - --gunicorn-opts=--timeout 600
