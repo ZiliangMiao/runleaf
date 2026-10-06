@@ -23,12 +23,8 @@ import { isSystemMetricKey } from '../../utils/MetricsUtils';
 import DeleteRunModal from '../modals/DeleteRunModal';
 import Routes from '../../routes';
 import { RunViewMetricCharts } from './RunViewMetricCharts';
-import {
-  shouldEnableRunDetailsPageTracesTab,
-  shouldEnableGraphQLRunDetailsPage,
-} from '@mlflow/mlflow/src/common/utils/FeatureUtils';
+import { shouldEnableGraphQLRunDetailsPage } from '@mlflow/mlflow/src/common/utils/FeatureUtils';
 import { useMediaQuery } from '@databricks/web-shared/hooks';
-import { RunViewTracesTab } from './RunViewTracesTab';
 import { getGraphQLErrorMessage } from '../../../graphql/get-graphql-error';
 import { useLoggedModelsForExperimentRun } from '../experiment-page/hooks/useLoggedModelsForExperimentRun';
 
@@ -140,10 +136,6 @@ export const RunPage = () => {
             artifactUri={runInfo.artifactUri ?? undefined}
           />
         );
-      case RunPageTabName.TRACES:
-        if (shouldEnableRunDetailsPageTracesTab()) {
-          return <RunViewTracesTab runUuid={runUuid} runTags={tags} experimentId={experimentId} />;
-        }
     }
 
     return (

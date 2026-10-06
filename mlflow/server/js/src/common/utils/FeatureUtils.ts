@@ -52,7 +52,6 @@ export const shouldEnableDifferenceViewChartsV3 = () => false;
 export const shouldEnableMinMaxMetricsOnExperimentPage = () => false;
 
 export const shouldEnableTracingUI = () => true;
-export const shouldEnableRunDetailsPageTracesTab = () => true;
 export const shouldUseCompressedExperimentViewSharedState = () => true;
 export const shouldEnableUnifiedChartDataTraceHighlight = () => true;
 export const shouldUseRegexpBasedAutoRunsSearchFilter = () => true;
