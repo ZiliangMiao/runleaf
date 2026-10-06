@@ -17,7 +17,6 @@ const classNames = {
 
 const isExperimentsActive = (location: Location) => matchPath('/experiments/*', location.pathname);
 const isModelsActive = (location: Location) => matchPath('/models/*', location.pathname);
-const isPromptsActive = (location: Location) => matchPath('/prompts/*', location.pathname);
 
 export const MlflowHeader = ({
   isDarkTheme = false,
@@ -87,12 +86,6 @@ export const MlflowHeader = ({
           style={isModelsActive(location) ? classNames.activeNavLink : undefined}
         >
           Models
-        </Link>
-        <Link
-          to={ExperimentTrackingRoutes.promptsPageRoute}
-          style={isPromptsActive(location) ? classNames.activeNavLink : undefined}
-        >
-          Prompts
         </Link>
       </div>
       <div css={{ flex: 1 }} />
