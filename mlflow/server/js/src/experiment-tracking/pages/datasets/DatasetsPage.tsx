@@ -20,6 +20,7 @@ import {
   useDesignSystemTheme,
 } from '@databricks/design-system';
 import { ScrollablePageWrapper } from '../../../common/components/ScrollablePageWrapper';
+import { useSearchParams } from '../../../common/utils/RoutingUtils';
 import { DatasetReleasePanel, getErrorMessage } from './DatasetReleasePanel';
 import {
   DATASET_SPLITS,
@@ -151,9 +152,18 @@ const DatasetChangelogTable = ({ changelog }: { changelog: Record<string, string
 
 // ===== Dataset details =====
 
-const DatasetDetails = ({ dataset, onReleased }: { dataset: DatasetSummary; onReleased: () => void }) => {
+const DatasetDetails = ({
+  dataset,
+  selectedVersion,
+  onVersionSelected,
+  onReleased,
+}: {
+  dataset: DatasetSummary;
+  selectedVersion?: string;
+  onVersionSelected: (version: string) => void;
+  onReleased: () => void;
+}) => {
   const { theme } = useDesignSystemTheme();
-  const [selectedVersion, setSelectedVersion] = useState<string>();
   const versions = useQuery(['deeplore-dataset-versions', dataset.name], () => fetchDatasetVersions(dataset.name), {
     refetchOnWindowFocus: false,
     retry: false,
@@ -175,9 +185,7 @@ const DatasetDetails = ({ dataset, onReleased }: { dataset: DatasetSummary; onRe
       ? [{ value: localVersion, label: dataset.metadata.version ?? 'Unversioned' }]
       : []),
   ];
-  const shownVersion = versionOptions.some((option) => option.value === selectedVersion)
-    ? selectedVersion
-    : versionOptions[0]?.value;
+  const shownVersion = selectedVersion ?? versionOptions[0]?.value;
   const selectedRelease = releasedVersions.find((version) => version.version === shownVersion);
   const metadata = selectedRelease?.metadata ?? (shownVersion === localVersion ? dataset.metadata : undefined);
   // Every field must come from the selected snapshot, including its changelog and hashes.
@@ -218,7 +226,7 @@ const DatasetDetails = ({ dataset, onReleased }: { dataset: DatasetSummary; onRe
             aria-label="Metadata version"
             value={shownVersion}
             options={versionOptions}
-            onChange={(version: string) => setSelectedVersion(version)}
+            onChange={(version: string) => onVersionSelected(version)}
             loading={versions.isFetching}
             disabled={versionOptions.length === 0}
             placeholder="No version available"
@@ -244,6 +252,20 @@ const DatasetDetails = ({ dataset, onReleased }: { dataset: DatasetSummary; onRe
           </MetadataField>
           <MetadataField label="Directory">
             {metadata?.root || <Typography.Hint>Not specified</Typography.Hint>}
+          </MetadataField>
+          <MetadataField label="Git commit">
+            {selectedRelease?.git_commit ? (
+              <code>{selectedRelease.git_commit}</code>
+            ) : (
+              <Typography.Hint>Not available</Typography.Hint>
+            )}
+          </MetadataField>
+          <MetadataField label="Git tag">
+            {selectedRelease?.git_tag ? (
+              <code>{selectedRelease.git_tag}</code>
+            ) : (
+              <Typography.Hint>Not available</Typography.Hint>
+            )}
           </MetadataField>
           <MetadataField label="Metrics">
             <div css={{ display: 'flex', flexWrap: 'wrap', gap: theme.spacing.xs }}>
@@ -297,14 +319,19 @@ const DatasetDetails = ({ dataset, onReleased }: { dataset: DatasetSummary; onRe
 const DatasetsPage = () => {
   const queryClient = useQueryClient();
   const [refreshing, setRefreshing] = useState(false);
-  const [selectedName, setSelectedName] = useState<string>();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const selectedName = searchParams.get('name');
+  const selectedVersion = searchParams.get('version') ?? undefined;
   const datasets = useQuery(['deeplore-datasets'], fetchDatasets, { refetchOnWindowFocus: false, retry: false });
   const refetchDatasets = datasets.refetch;
   const handleReleased = useCallback(() => {
     refetchDatasets();
   }, [refetchDatasets]);
   const listed = datasets.data?.datasets ?? [];
-  const selected = listed.find((dataset) => dataset.name === selectedName) ?? listed[0];
+  const selected = selectedName ? listed.find((dataset) => dataset.name === selectedName) : listed[0];
+  const handleSelected = (name: string, version?: string) => {
+    setSearchParams({ name, ...(version ? { version } : {}) });
+  };
   const handleRefresh = async () => {
     setRefreshing(true);
     try {
@@ -362,13 +389,21 @@ const DatasetsPage = () => {
             </>
           )}
           {listed.length > 0 && (
-            <DatasetsTable datasets={listed} selectedName={selected?.name} onSelect={setSelectedName} />
+            <DatasetsTable datasets={listed} selectedName={selected?.name} onSelect={handleSelected} />
           )}
           {listed.length === 0 && Boolean(datasets.data?.repos.length) && (
             <Typography.Hint>No datasets found in the configured repositories.</Typography.Hint>
           )}
           <Spacer shrinks={false} />
-          {selected && <DatasetDetails key={selected.name} dataset={selected} onReleased={handleReleased} />}
+          {selected && (
+            <DatasetDetails
+              key={selected.name}
+              dataset={selected}
+              selectedVersion={selectedVersion}
+              onVersionSelected={(version) => handleSelected(selected.name, version)}
+              onReleased={handleReleased}
+            />
+          )}
           <Spacer shrinks={false} />
         </>
       )}

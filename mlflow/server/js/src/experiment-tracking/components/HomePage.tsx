@@ -39,7 +39,9 @@ const HomePage = () => {
 
   const { tabName } = useParams();
   const shouldRenderTabbedView =
-    tabName === ExperimentPageTabName.Lineage || (isExperimentLoggedModelsUIEnabled() && Boolean(tabName));
+    tabName === ExperimentPageTabName.Lineage ||
+    tabName === ExperimentPageTabName.Benchmarks ||
+    (isExperimentLoggedModelsUIEnabled() && Boolean(tabName));
 
   const experimentIds = useExperimentIds();
   const experiments = useSelector((state: ReduxState) => values(state.entities.experimentsById));

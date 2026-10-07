@@ -21,7 +21,7 @@ classifiers = [
   "Intended Audience :: Information Technology",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
   "Topic :: Software Development :: Libraries :: Python Modules",
-  "License :: OSI Approved :: Apache Software License",
+  "License :: OSI Approved :: GNU Affero General Public License v3",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3.9",
 ]
@@ -134,6 +134,9 @@ databricks = "mlflow.deployments.databricks"
 http = "mlflow.deployments.mlflow"
 https = "mlflow.deployments.mlflow"
 openai = "mlflow.deployments.openai"
+
+[tool.setuptools]
+license-files = ["LICENSE.txt", "LICENSE-APACHE.txt"]
 
 [tool.setuptools.package-data]
 mlflow = [

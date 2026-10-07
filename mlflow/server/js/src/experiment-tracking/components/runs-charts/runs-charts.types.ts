@@ -488,6 +488,10 @@ export class RunsChartsLineCardConfig extends RunsChartsCardConfig {
    */
   selectedMetricKeys?: string[];
 
+  /** Metric histories hidden by the monitor legend, retained for re-selection. */
+  hiddenMetricKeys?: string[];
+  runMonitorAxisVersion?: number;
+
   /**
    * Smoothness
    */

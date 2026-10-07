@@ -177,7 +177,7 @@ describe('RunViewOverview integration', () => {
     expect(screen.getByRole('row', { name: /Duration\s+5\.0min/ })).toBeInTheDocument();
 
     // Datasets
-    expect(screen.getByRole('row', { name: /Datasets used\s+—/ })).toBeInTheDocument();
+    expect(screen.getByRole('row', { name: /Dataset\s+—/ })).toBeInTheDocument();
 
     await waitFor(() => {
       // Logged models
@@ -361,13 +361,11 @@ describe('RunViewOverview integration', () => {
     });
   });
 
-  test('Run overview contains prompts', async () => {
+  test('Run overview excludes prompts', () => {
     renderComponent();
 
-    await waitFor(() => {
-      expect(screen.getByText(`${testPromptName} (v${testPromptVersion})`)).toBeInTheDocument();
-      expect(usePromptVersionsForRunQuery).toBeCalledWith({ runUuid: testRunUuid });
-    });
+    expect(screen.queryByText('Registered prompts')).not.toBeInTheDocument();
+    expect(usePromptVersionsForRunQuery).not.toBeCalled();
   });
 
   // TODO: expand integration tests when tags, params, metrics and models are complete

@@ -18,6 +18,8 @@ from sqlalchemy.orm import aliased
 from mlflow.deeplore import dataset_registry, evaluation_registry
 from mlflow.deeplore.dataset_api import build_dataset_summary, find_repos
 from mlflow.deeplore.dataset_release import find_datasets, parse_hashes, parse_version
+from mlflow.exceptions import MlflowException
+from mlflow.protos.databricks_pb2 import INVALID_PARAMETER_VALUE
 from mlflow.store.tracking.dbmodels.models import (
     SqlDataset,
     SqlInput,
@@ -58,8 +60,7 @@ def _add_dataset(
         not isinstance(version, str)
         or not version
         or not isinstance(content_hash, str)
-        or re.fullmatch(r"[0-9a-fA-F]{32}(?:\.dir)?", content_hash)
-        is None
+        or re.fullmatch(r"[0-9a-fA-F]{32}(?:\.dir)?", content_hash) is None
     ):
         return
     group = _get_group(groups, name, content_hash.lower())
@@ -109,17 +110,14 @@ def _build_historical_versions(
     }
     with evaluation_registry._session(store) as session:
         evaluation = evaluation_registry.SqlEvaluation
-        identities = list(
-            session.execute(
-                sqlalchemy.select(
-                    evaluation.dataset_name,
-                    evaluation.dataset_version,
-                    evaluation.test_hash,
+        identities = [
+            (row.dataset_name, row.dataset_version, row.test_hash)
+            for row in session.execute(
+                sqlalchemy.select(evaluation).where(
+                    evaluation.association_status == "confirmed"
                 )
-                .where(evaluation.association_status == "confirmed")
-                .distinct()
-            )
-        )
+            ).scalars()
+        ]
         context = aliased(SqlInputTag)
         split = aliased(SqlInputTag)
         identities.extend(
@@ -168,18 +166,19 @@ def _build_first_dataset_version(versions: list[str]) -> str | None:
 
 
 def _build_run(row: SqlRun, tags: dict[str, str]) -> dict[str, Any]:
-    sequence = tags.get("run_seq")
-    sequence_match = re.fullmatch(r"r([0-9]+)", sequence or "")
-    raw_number = tags.get("run_num", "")
-    if re.fullmatch(r"[0-9]+", raw_number):
-        number = int(raw_number)
-    else:
-        number = int(sequence_match.group(1)) if sequence_match else None
+    raw_number = tags.get("run_num", tags.get("run_seq", ""))
+    number_match = re.fullmatch(r"r?([0-9]+)", raw_number)
+    number = int(number_match.group(1)) if number_match else None
+    if "run_num" in tags and "run_seq" in tags:
+        if tags["run_num"] != tags["run_seq"]:
+            raise MlflowException(
+                f"Conflicting run_num and legacy run_seq for run {row.run_uuid}",
+                INVALID_PARAMETER_VALUE,
+            )
     return {
         "run_id": row.run_uuid,
         "run_name": row.name or tags.get("mlflow.runName") or row.run_uuid,
-        "run_seq": sequence if sequence_match else None,
-        "run_num": number,
+        "run_num": number if number is not None and number > 0 else None,
     }
 
 
@@ -226,10 +225,11 @@ def build_benchmarks(store: SqlAlchemyStore, experiment_id: str) -> dict[str, An
                 SqlRun.lifecycle_stage == "active",
                 evaluation.association_status == "confirmed",
                 evaluation.dataset_name.is_not(None),
-                evaluation.test_hash.is_not(None),
             )
         )
         for row in session.execute(query).scalars():
+            if row.test_hash is None:
+                continue
             group = _get_group(groups, row.dataset_name, row.test_hash)
             group["dataset_versions"].add(row.dataset_version)
             result = row.to_dict()

@@ -358,8 +358,8 @@ def handle_get_dataset_release(job_id: str) -> Response:
 ROUTES: tuple[tuple[str, Any, str], ...] = (
     ("/datasets", handle_list_datasets, "GET"),
     ("/datasets/versions", handle_register_dataset_version, "POST"),
-    ("/datasets/<name>/versions", handle_list_dataset_versions, "GET"),
-    ("/datasets/<name>/releases", handle_start_dataset_release, "POST"),
+    ("/datasets/<path:name>/versions", handle_list_dataset_versions, "GET"),
+    ("/datasets/<path:name>/releases", handle_start_dataset_release, "POST"),
     ("/dataset-releases", handle_list_dataset_releases, "GET"),
     ("/dataset-releases/<job_id>", handle_get_dataset_release, "GET"),
 )

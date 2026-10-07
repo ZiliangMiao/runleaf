@@ -37,6 +37,8 @@ import { downloadChartMetricHistoryCsv } from '../../../experiment-page/utils/ex
 import { RunsChartsNoDataFoundIndicator } from '../RunsChartsNoDataFoundIndicator';
 import { RunsChartsGlobalLineChartConfig } from '../../../experiment-page/models/ExperimentPageUIState';
 import { useLineChartGlobalConfig } from '../hooks/useLineChartGlobalConfig';
+import { Button, useDesignSystemTheme } from '@databricks/design-system';
+import { useUpdateRunsChartsUIConfiguration } from '../../hooks/useRunsChartsUIConfiguration';
 
 const getV2ChartTitle = (cardConfig: RunsChartsLineCardConfig): string => {
   if (cardConfig.displayName) {
@@ -100,7 +102,89 @@ export const RunsChartsLineChartCard = ({
   positionInSection,
   ...reorderProps
 }: RunsChartsLineChartCardProps) => {
+  const { theme } = useDesignSystemTheme();
   const { xAxisKey, selectedXAxisMetricKey, lineSmoothness } = useLineChartGlobalConfig(config, globalLineChartConfig);
+  const isRunMonitor = config.metricSectionId === 'model-monitor' || config.metricSectionId === 'system-monitor';
+  const updateChartsUIState = useUpdateRunsChartsUIConfiguration();
+
+  const toggleMetric = useCallback(
+    (metricKey: string) => {
+      updateChartsUIState((current) => ({
+        ...current,
+        compareRunCharts: current.compareRunCharts?.map((chart) => {
+          if (chart.uuid !== config.uuid) {
+            return chart;
+          }
+          const hiddenMetricKeys = (chart as RunsChartsLineCardConfig).hiddenMetricKeys ?? [];
+          return {
+            ...chart,
+            hiddenMetricKeys: hiddenMetricKeys.includes(metricKey)
+              ? hiddenMetricKeys.filter((key) => key !== metricKey)
+              : [...hiddenMetricKeys, metricKey],
+          };
+        }),
+      }));
+    },
+    [config.uuid, updateChartsUIState],
+  );
+
+  const toggleLogScale = useCallback(() => {
+    updateChartsUIState((current) => ({
+      ...current,
+      compareRunCharts: current.compareRunCharts?.map((chart) => {
+        if (chart.uuid !== config.uuid) {
+          return chart;
+        }
+        const line = chart as RunsChartsLineCardConfig;
+        return {
+          ...line,
+          scaleType: line.scaleType === 'log' ? 'linear' : 'log',
+          range: { ...line.range, yMin: undefined, yMax: undefined },
+        };
+      }),
+    }));
+  }, [config.uuid, updateChartsUIState]);
+
+  const setAllMetricsVisible = useCallback(
+    (visible: boolean) => {
+      updateChartsUIState((current) => ({
+        ...current,
+        compareRunCharts: current.compareRunCharts?.map((chart) => {
+          if (chart.uuid !== config.uuid) {
+            return chart;
+          }
+          const line = chart as RunsChartsLineCardConfig;
+          return {
+            ...line,
+            hiddenMetricKeys: visible ? [] : [...(line.selectedMetricKeys ?? [line.metricKey])],
+          };
+        }),
+      }));
+    },
+    [config.uuid, updateChartsUIState],
+  );
+
+  // Changing the button type remounts its DOM node and loses keyboard focus.
+  const logScaleControl = isRunMonitor ? (
+    <Button
+      componentId="mlflow.run_monitor.log_scale"
+      size="small"
+      type="tertiary"
+      aria-label="Log scale"
+      aria-pressed={config.scaleType === 'log'}
+      title="Log scale"
+      onClick={toggleLogScale}
+      css={{
+        minWidth: 40,
+        '&[aria-pressed="true"]': {
+          backgroundColor: theme.colors.actionTertiaryBackgroundPress,
+          color: theme.colors.primary,
+        },
+      }}
+    >
+      Log
+    </Button>
+  ) : null;
 
   const toggleFullScreenChart = useCallback(() => {
     setFullScreenChart?.({
@@ -180,6 +264,14 @@ export const RunsChartsLineChartCard = ({
     }
     return undefined;
   });
+
+  useEffect(() => {
+    if (isRunMonitor) {
+      // Linear coordinates cannot be reused as logarithmic range exponents.
+      setYRangeLocal(undefined);
+      destroyTooltip();
+    }
+  }, [config.scaleType, isRunMonitor, destroyTooltip]);
 
   const { setOffsetTimestamp, stepRange, xRangeLocal, setXRangeLocal } = useCompareRunChartSelectedRange(
     config,
@@ -327,6 +419,11 @@ export const RunsChartsLineChartCard = ({
           runsData={chartData}
           metricKey={config.metricKey}
           selectedMetricKeys={config.selectedMetricKeys}
+          isRunMonitor={isRunMonitor}
+          hideRunName={isRunMonitor}
+          hiddenMetricKeys={isRunMonitor ? config.hiddenMetricKeys : undefined}
+          onToggleMetric={isRunMonitor ? toggleMetric : undefined}
+          onSetAllMetricsVisible={isRunMonitor ? setAllMetricsVisible : undefined}
           scaleType={config.scaleType}
           xAxisKey={xAxisKey}
           xAxisScaleType={config.xAxisScaleType}
@@ -353,6 +450,9 @@ export const RunsChartsLineChartCard = ({
   const onClickDownload = useCallback(
     (format) => {
       const savedChartTitle = config.selectedMetricKeys?.join('-') ?? config.metricKey;
+      const visibleMetricKeys = (config.selectedMetricKeys ?? [config.metricKey]).filter(
+        (key) => !isRunMonitor || !config.hiddenMetricKeys?.includes(key),
+      );
       if (format === 'csv-full') {
         const singleRunUuids = compact(chartData.map((d) => d.runInfo?.runUuid));
         const runUuidsFromGroups = compact(
@@ -361,16 +461,16 @@ export const RunsChartsLineChartCard = ({
             .flatMap((group) => group.groupParentInfo?.runUuids),
         );
         const runUuids = [...singleRunUuids, ...runUuidsFromGroups];
-        onDownloadFullMetricHistoryCsv?.(runUuids, config.selectedMetricKeys || [config.metricKey]);
+        onDownloadFullMetricHistoryCsv?.(runUuids, visibleMetricKeys);
         return;
       }
       if (format === 'csv') {
-        downloadChartMetricHistoryCsv(chartData, config.selectedMetricKeys || [config.metricKey], savedChartTitle);
+        downloadChartMetricHistoryCsv(chartData, visibleMetricKeys, savedChartTitle);
         return;
       }
       imageDownloadHandler?.(format, savedChartTitle);
     },
-    [chartData, config, imageDownloadHandler, onDownloadFullMetricHistoryCsv],
+    [chartData, config, imageDownloadHandler, onDownloadFullMetricHistoryCsv, isRunMonitor],
   );
 
   // Do not render the card if the chart is empty and the user has enabled hiding empty charts
@@ -379,7 +479,16 @@ export const RunsChartsLineChartCard = ({
   }
 
   if (fullScreen) {
-    return chartBody;
+    return isRunMonitor ? (
+      <div css={{ display: 'flex', flexDirection: 'column', height: '100%', gap: 8 }}>
+        <div css={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', height: 32, flexShrink: 0 }}>
+          {logScaleControl}
+        </div>
+        <div css={{ flex: 1, minHeight: 0 }}>{chartBody}</div>
+      </div>
+    ) : (
+      chartBody
+    );
   }
 
   return (
@@ -387,6 +496,8 @@ export const RunsChartsLineChartCard = ({
       onEdit={onEdit}
       onDelete={onDelete}
       title={getV2ChartTitle(config)}
+      headerActions={logScaleControl}
+      height={isRunMonitor ? 420 : undefined}
       uuid={config.uuid}
       dragGroupKey={RunsChartsChartsDragGroup.GENERAL_AREA}
       supportedDownloadFormats={SUPPORTED_DOWNLOAD_FORMATS}

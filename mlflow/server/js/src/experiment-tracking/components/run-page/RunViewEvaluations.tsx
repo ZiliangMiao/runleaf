@@ -20,6 +20,7 @@ import { ErrorWrapper } from '../../../common/utils/ErrorWrapper';
 import { getJson } from '../../../common/utils/FetchUtils';
 import { Link } from '../../../common/utils/RoutingUtils';
 import Routes from '../../routes';
+import { RunDatasetEntry } from './overview/RunViewDatasetBox';
 
 // ===== Response types and requests =====
 
@@ -29,7 +30,6 @@ interface RunEvaluation {
   association_status: 'confirmed' | 'pending';
   dataset_name: string | null;
   dataset_version: string | null;
-  test_hash: string | null;
   ckpt_path: string | null;
   ckpt_hash: string | null;
   evaluated_at: number | null;
@@ -62,9 +62,9 @@ const formatEvaluationTime = (timestamp: number): string =>
 const EvaluationField = ({ label, children }: { label: string; children: React.ReactNode }) => {
   const { theme } = useDesignSystemTheme();
   return (
-    <div css={{ minWidth: 0, maxWidth: '100%' }}>
-      <dt css={{ color: theme.colors.textSecondary, marginBottom: theme.spacing.xs }}>{label}</dt>
-      <dd css={{ margin: 0, overflowWrap: 'anywhere' }}>
+    <div css={{ display: 'flex', alignItems: 'baseline', gap: theme.spacing.sm, minWidth: 0, maxWidth: '100%' }}>
+      <dt css={{ color: theme.colors.textSecondary, flexShrink: 0 }}>{label}</dt>
+      <dd css={{ margin: 0, minWidth: 0, overflowWrap: 'anywhere' }}>
         {children ?? <Typography.Hint>Not recorded</Typography.Hint>}
       </dd>
     </div>
@@ -79,6 +79,7 @@ const EvaluationRow = ({
   children: React.ReactNode;
 }) => {
   const { theme } = useDesignSystemTheme();
+  const Content = label === 'dataset' ? 'div' : 'dl';
   return (
     <div
       css={{
@@ -91,7 +92,7 @@ const EvaluationRow = ({
       <Typography.Text bold css={{ paddingLeft: theme.spacing.md + theme.spacing.sm }}>
         {label}
       </Typography.Text>
-      <dl
+      <Content
         css={{
           display: 'grid',
           gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
@@ -101,7 +102,7 @@ const EvaluationRow = ({
         }}
       >
         {children}
-      </dl>
+      </Content>
     </div>
   );
 };
@@ -216,22 +217,44 @@ const EvaluationRecord = ({
         </EvaluationField>
       </EvaluationRow>
       <EvaluationRow label="dataset">
-        <EvaluationField label="name">
-          <div css={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: theme.spacing.xs }}>
-            {evaluation.dataset_name ?? <Typography.Hint>Not recorded</Typography.Hint>}
-            {evaluation.association_status === 'pending' && (
-              <Tag
-                componentId="mlflow.run_evaluations.pending_association"
-                color="default"
-                css={{ maxWidth: '100%', whiteSpace: 'normal', height: 'auto' }}
-              >
-                Dataset association pending
-              </Tag>
-            )}
-          </div>
-        </EvaluationField>
-        <EvaluationField label="version">{evaluation.dataset_version}</EvaluationField>
-        <EvaluationField label="hash">{evaluation.test_hash}</EvaluationField>
+        <div
+          css={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'flex-start',
+            gap: theme.spacing.xs,
+            gridColumn: '1 / -1',
+            minWidth: 0,
+            overflowWrap: 'anywhere',
+          }}
+        >
+          {evaluation.dataset_name ? (
+            <RunDatasetEntry
+              dataset={{
+                name: evaluation.dataset_name,
+                version: evaluation.dataset_version ?? undefined,
+                link:
+                  evaluation.association_status === 'confirmed' && evaluation.dataset_version
+                    ? `${Routes.datasetsPageRoute}?${new URLSearchParams({
+                        name: evaluation.dataset_name,
+                        version: evaluation.dataset_version,
+                      })}`
+                    : undefined,
+              }}
+            />
+          ) : (
+            <Typography.Hint>Not recorded</Typography.Hint>
+          )}
+          {evaluation.association_status === 'pending' && (
+            <Tag
+              componentId="mlflow.run_evaluations.pending_association"
+              color="default"
+              css={{ maxWidth: '100%', whiteSpace: 'normal', height: 'auto' }}
+            >
+              Dataset association pending
+            </Tag>
+          )}
+        </div>
       </EvaluationRow>
       <EvaluationRow label="checkpoint">
         <EvaluationField label="path">

@@ -75,6 +75,10 @@
     "defaultMessage": "Time (wall)",
     "description": "Experiment page > view controls > global settings for line chart view > settings for x-axis > label for setting to use wall time axis in all charts"
   },
+  "/U09l8": {
+    "defaultMessage": "Dataset",
+    "description": "Title for the datasets section on the run details page"
+  },
   "/XlqZA": {
     "defaultMessage": "Service unavailable error",
     "description": "Request failed due to service being available (HTTP STATUS 503) generic error message"
@@ -310,6 +314,10 @@
   "3D2Znf": {
     "defaultMessage": "Filter by {columnNames}",
     "description": "Experiment page > artifact compare view > search input placeholder"
+  },
+  "3JJ90t": {
+    "defaultMessage": "Benchmarks",
+    "description": "A tab comparing benchmark results within the experiment"
   },
   "3Rb4sG": {
     "defaultMessage": "Delete",
@@ -711,6 +719,10 @@
     "defaultMessage": "Pin group",
     "description": "A tooltip for the pin icon button in the runs table next to the not pinned run group"
   },
+  "8lrVo2": {
+    "defaultMessage": "Lineage",
+    "description": "A tab showing parent relationships between experiment runs"
+  },
   "8qJt7/": {
     "defaultMessage": "Experimental",
     "description": "Experimental badge shown for features which are experimental"
@@ -815,10 +827,6 @@
     "defaultMessage": "Group by: {value}",
     "description": "Experiment page > group by runs control > trigger button label > with value"
   },
-  "AGQOPV": {
-    "defaultMessage": "Traces",
-    "description": "A button enabling traces mode on the experiment page"
-  },
   "AM8DuO": {
     "defaultMessage": "Failed",
     "description": "Run page > Overview > Run status cell > Value for failed state"
@@ -826,6 +834,10 @@
   "AOoWxS": {
     "defaultMessage": "Error",
     "description": "Title for error fallback component in prompts management UI"
+  },
+  "AWN63P": {
+    "defaultMessage": "Evaluations",
+    "description": "Run details page > tab selector > evaluations tab"
   },
   "Aqq08o": {
     "defaultMessage": "HTTP",
@@ -1779,10 +1791,6 @@
     "defaultMessage": "Cancel",
     "description": "Cancel button text for creating model in the model registry"
   },
-  "SCqKp8": {
-    "defaultMessage": "Evaluation",
-    "description": "A button enabling compare runs (evaluation) mode on the experiment page"
-  },
   "SI6n4L": {
     "defaultMessage": "Compare",
     "description": "Label for the compare mode on the registered prompt details page"
@@ -1906,10 +1914,6 @@
   "U82iv6": {
     "defaultMessage": "Registered Models",
     "description": "Text for registered model link in the title for model comparison page"
-  },
-  "UCQwvo": {
-    "defaultMessage": "Registered prompts",
-    "description": "Run page > Overview > Run prompts section label"
   },
   "UEDu0c": {
     "defaultMessage": "MLflow UI automatically fetches metric histories for active runs and updates the metrics plot with a {interval} second interval.",
@@ -2707,10 +2711,6 @@
     "defaultMessage": "Rename",
     "description": "Menu item to rename an experiment run"
   },
-  "fwp4JP": {
-    "defaultMessage": "Datasets used",
-    "description": "Run page > Overview > Run datasets section label"
-  },
   "fyVs2o": {
     "defaultMessage": "Examples:",
     "description": "Text header for examples of logged models search syntax"
@@ -2930,6 +2930,10 @@
   "jOyo3+": {
     "defaultMessage": "Step",
     "description": "Header title for the step column in the logged model list table. Step indicates the run step where the model was logged."
+  },
+  "jSDM/t": {
+    "defaultMessage": "Dataset",
+    "description": "Run page > Overview > Run datasets section label"
   },
   "jULSKd": {
     "defaultMessage": "Output",
@@ -3455,10 +3459,6 @@
     "defaultMessage": "Download as PNG",
     "description": "Experiment page > compare runs tab > chart header > download as PNG option"
   },
-  "s8a93+": {
-    "defaultMessage": "Traces",
-    "description": "Run details page > tab selector > Traces tab"
-  },
   "sByLVU": {
     "defaultMessage": "No runs logged",
     "description": "Empty state title text for experiment runs page when no runs are logged in the experiment"
@@ -3466,10 +3466,6 @@
   "sDqD2S": {
     "defaultMessage": "The dataset is an array. To see a preview of the dataset, view the dataset in the training notebook.",
     "description": "Notification when the dataset is an array data source in the experiment run dataset schema"
-  },
-  "sFPlmE": {
-    "defaultMessage": "Accessing artifact evaluation by \"Evaluation\" tab is being discontinued. In order to use this feature, use <link>\"Artifacts evaluation\" mode in Runs tab</link> instead.",
-    "description": "A button enabling compare runs (evaluation) mode on the experiment page"
   },
   "sIC5K3": {
     "defaultMessage": "Time (relative)",
@@ -3830,10 +3826,6 @@
   "ynkoR7": {
     "defaultMessage": "No models versions are registered yet. <link>Learn more</link> about how to register a model version.",
     "description": "Message text when no model versions are registered"
-  },
-  "yrsFOP": {
-    "defaultMessage": "Datasets",
-    "description": "Title for the datasets section on the run details page"
   },
   "yzxYIm": {
     "defaultMessage": "Points:",

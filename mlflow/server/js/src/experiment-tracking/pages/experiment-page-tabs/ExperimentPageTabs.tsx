@@ -15,6 +15,7 @@ const ExperimentLoggedModelListPage = React.lazy(
 );
 
 const ExperimentLineagePage = React.lazy(() => import('../experiment-lineage/ExperimentLineagePage'));
+const ExperimentBenchmarksPage = React.lazy(() => import('../experiment-benchmarks/ExperimentBenchmarksPage'));
 
 const ExperimentPageTabsImpl = () => {
   const { experimentId, tabName } = useParams();
@@ -57,6 +58,9 @@ const ExperimentPageTabsImpl = () => {
       <ExperimentViewRunsModeSwitchV2 experimentId={experimentId} activeTab={activeTab} />
       <Spacer size="sm" shrinks={false} />
       <React.Suspense fallback={<TableSkeleton lines={8} />}>
+        {activeTab === ExperimentPageTabName.Benchmarks && (
+          <ExperimentBenchmarksPage key={experimentId} experimentId={experimentId} />
+        )}
         {activeTab === ExperimentPageTabName.Models && <ExperimentLoggedModelListPage />}
         {activeTab === ExperimentPageTabName.Lineage && (
           <ExperimentLineagePage key={experimentId} experimentId={experimentId} />

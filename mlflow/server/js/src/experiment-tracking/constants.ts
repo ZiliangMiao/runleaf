@@ -135,6 +135,7 @@ export const LINE_CHART_RELATIVE_TIME_THRESHOLD = 1000 * 60 * 60 * 24; // 1 day
 export const HOUR_IN_MILLISECONDS = 1000 * 60 * 60; // 1 hour
 
 export enum ExperimentPageTabName {
+  Benchmarks = 'benchmarks',
   Models = 'models',
   Lineage = 'lineage',
   EvaluationMonitoring = 'evaluation-monitoring',

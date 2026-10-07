@@ -11,10 +11,12 @@ export const RunsChartsGlobalChartSettingsDropdown = ({
   globalLineChartConfig,
   metricKeyList,
   updateUIState,
+  showXAxisSettings = true,
 }: {
   metricKeyList: string[];
   globalLineChartConfig?: RunsChartsGlobalLineChartConfig;
   updateUIState: (stateSetter: RunsChartsUIConfigurationSetter) => void;
+  showXAxisSettings?: boolean;
 }) => {
   const { theme } = useDesignSystemTheme();
   const intl = useIntl();
@@ -54,91 +56,93 @@ export const RunsChartsGlobalChartSettingsDropdown = ({
         </DropdownMenu.Trigger>
       </Tooltip>
       <DropdownMenu.Content align="end" css={{ minWidth: 300 }}>
-        <DropdownMenu.Group
-          role="region"
-          aria-label={intl.formatMessage({
-            defaultMessage: 'X-axis',
-            description:
-              'Experiment page > view controls > global settings for line chart view > settings for x-axis section label',
-          })}
-        >
-          <DropdownMenu.Label css={{ display: 'flex', gap: 8 }}>
-            <FormattedMessage
-              defaultMessage="X-axis"
-              description="Experiment page > view controls > global settings for line chart view > settings for x-axis section label"
-            />
-          </DropdownMenu.Label>
-          <DropdownMenu.CheckboxItem
-            componentId="codegen_mlflow_app_src_experiment-tracking_components_runs-charts_components_runschartsglobalchartsettingsdropdown.tsx_68"
-            checked={xAxisKey === RunsChartsLineChartXAxisType.STEP}
-            onClick={() => updateGlobalLineChartSettings({ xAxisKey: RunsChartsLineChartXAxisType.STEP })}
+        {showXAxisSettings && (
+          <DropdownMenu.Group
+            role="region"
+            aria-label={intl.formatMessage({
+              defaultMessage: 'X-axis',
+              description:
+                'Experiment page > view controls > global settings for line chart view > settings for x-axis section label',
+            })}
           >
-            <DropdownMenu.ItemIndicator />
-            <FormattedMessage
-              defaultMessage="Step"
-              description="Experiment page > view controls > global settings for line chart view > settings for x-axis > label for setting to use step axis in all charts"
-            />
-          </DropdownMenu.CheckboxItem>
-          <DropdownMenu.CheckboxItem
-            componentId="codegen_mlflow_app_src_experiment-tracking_components_runs-charts_components_runschartsglobalchartsettingsdropdown.tsx_78"
-            checked={xAxisKey === RunsChartsLineChartXAxisType.TIME}
-            onClick={() => updateGlobalLineChartSettings({ xAxisKey: RunsChartsLineChartXAxisType.TIME })}
-          >
-            <DropdownMenu.ItemIndicator />
-            <FormattedMessage
-              defaultMessage="Time (wall)"
-              description="Experiment page > view controls > global settings for line chart view > settings for x-axis > label for setting to use wall time axis in all charts"
-            />
-          </DropdownMenu.CheckboxItem>
-          <DropdownMenu.CheckboxItem
-            componentId="codegen_mlflow_app_src_experiment-tracking_components_runs-charts_components_runschartsglobalchartsettingsdropdown.tsx_88"
-            checked={xAxisKey === RunsChartsLineChartXAxisType.TIME_RELATIVE}
-            onClick={() => updateGlobalLineChartSettings({ xAxisKey: RunsChartsLineChartXAxisType.TIME_RELATIVE })}
-          >
-            <DropdownMenu.ItemIndicator />
-            <FormattedMessage
-              defaultMessage="Time (relative)"
-              description="Experiment page > view controls > global settings for line chart view > settings for x-axis > label for setting to use relative time axis in all charts"
-            />
-          </DropdownMenu.CheckboxItem>
-          <DropdownMenu.Sub>
-            <DropdownMenu.SubTrigger
-              css={{
-                paddingLeft: theme.spacing.xs + theme.spacing.sm,
-              }}
-            >
-              <DropdownMenu.IconWrapper>
-                <CheckIcon
-                  css={{
-                    visibility: isUsingGlobalMetricXaxis ? 'visible' : 'hidden',
-                  }}
-                />
-              </DropdownMenu.IconWrapper>
+            <DropdownMenu.Label css={{ display: 'flex', gap: 8 }}>
               <FormattedMessage
-                defaultMessage="Metric"
-                description="Experiment page > view controls > global settings for line chart view > settings for x-axis > label for setting to use metric axis in all charts"
+                defaultMessage="X-axis"
+                description="Experiment page > view controls > global settings for line chart view > settings for x-axis section label"
               />
-            </DropdownMenu.SubTrigger>
-            <DropdownMenu.SubContent css={{ maxHeight: 300, overflow: 'auto' }}>
-              {metricKeyList.map((metricKey) => (
-                <DropdownMenu.CheckboxItem
-                  componentId="codegen_mlflow_app_src_experiment-tracking_components_runs-charts_components_runschartsglobalchartsettingsdropdown.tsx_118"
-                  key={metricKey}
-                  checked={selectedXAxisMetricKey === metricKey && isUsingGlobalMetricXaxis}
-                  onClick={() =>
-                    updateGlobalLineChartSettings({
-                      xAxisKey: RunsChartsLineChartXAxisType.METRIC,
-                      selectedXAxisMetricKey: metricKey,
-                    })
-                  }
-                >
-                  <DropdownMenu.ItemIndicator />
-                  {metricKey}
-                </DropdownMenu.CheckboxItem>
-              ))}
-            </DropdownMenu.SubContent>
-          </DropdownMenu.Sub>
-        </DropdownMenu.Group>
+            </DropdownMenu.Label>
+            <DropdownMenu.CheckboxItem
+              componentId="codegen_mlflow_app_src_experiment-tracking_components_runs-charts_components_runschartsglobalchartsettingsdropdown.tsx_68"
+              checked={xAxisKey === RunsChartsLineChartXAxisType.STEP}
+              onClick={() => updateGlobalLineChartSettings({ xAxisKey: RunsChartsLineChartXAxisType.STEP })}
+            >
+              <DropdownMenu.ItemIndicator />
+              <FormattedMessage
+                defaultMessage="Step"
+                description="Experiment page > view controls > global settings for line chart view > settings for x-axis > label for setting to use step axis in all charts"
+              />
+            </DropdownMenu.CheckboxItem>
+            <DropdownMenu.CheckboxItem
+              componentId="codegen_mlflow_app_src_experiment-tracking_components_runs-charts_components_runschartsglobalchartsettingsdropdown.tsx_78"
+              checked={xAxisKey === RunsChartsLineChartXAxisType.TIME}
+              onClick={() => updateGlobalLineChartSettings({ xAxisKey: RunsChartsLineChartXAxisType.TIME })}
+            >
+              <DropdownMenu.ItemIndicator />
+              <FormattedMessage
+                defaultMessage="Time (wall)"
+                description="Experiment page > view controls > global settings for line chart view > settings for x-axis > label for setting to use wall time axis in all charts"
+              />
+            </DropdownMenu.CheckboxItem>
+            <DropdownMenu.CheckboxItem
+              componentId="codegen_mlflow_app_src_experiment-tracking_components_runs-charts_components_runschartsglobalchartsettingsdropdown.tsx_88"
+              checked={xAxisKey === RunsChartsLineChartXAxisType.TIME_RELATIVE}
+              onClick={() => updateGlobalLineChartSettings({ xAxisKey: RunsChartsLineChartXAxisType.TIME_RELATIVE })}
+            >
+              <DropdownMenu.ItemIndicator />
+              <FormattedMessage
+                defaultMessage="Time (relative)"
+                description="Experiment page > view controls > global settings for line chart view > settings for x-axis > label for setting to use relative time axis in all charts"
+              />
+            </DropdownMenu.CheckboxItem>
+            <DropdownMenu.Sub>
+              <DropdownMenu.SubTrigger
+                css={{
+                  paddingLeft: theme.spacing.xs + theme.spacing.sm,
+                }}
+              >
+                <DropdownMenu.IconWrapper>
+                  <CheckIcon
+                    css={{
+                      visibility: isUsingGlobalMetricXaxis ? 'visible' : 'hidden',
+                    }}
+                  />
+                </DropdownMenu.IconWrapper>
+                <FormattedMessage
+                  defaultMessage="Metric"
+                  description="Experiment page > view controls > global settings for line chart view > settings for x-axis > label for setting to use metric axis in all charts"
+                />
+              </DropdownMenu.SubTrigger>
+              <DropdownMenu.SubContent css={{ maxHeight: 300, overflow: 'auto' }}>
+                {metricKeyList.map((metricKey) => (
+                  <DropdownMenu.CheckboxItem
+                    componentId="codegen_mlflow_app_src_experiment-tracking_components_runs-charts_components_runschartsglobalchartsettingsdropdown.tsx_118"
+                    key={metricKey}
+                    checked={selectedXAxisMetricKey === metricKey && isUsingGlobalMetricXaxis}
+                    onClick={() =>
+                      updateGlobalLineChartSettings({
+                        xAxisKey: RunsChartsLineChartXAxisType.METRIC,
+                        selectedXAxisMetricKey: metricKey,
+                      })
+                    }
+                  >
+                    <DropdownMenu.ItemIndicator />
+                    {metricKey}
+                  </DropdownMenu.CheckboxItem>
+                ))}
+              </DropdownMenu.SubContent>
+            </DropdownMenu.Sub>
+          </DropdownMenu.Group>
+        )}
         <DropdownMenu.Group
           role="region"
           aria-label={intl.formatMessage({
