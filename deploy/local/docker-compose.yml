@@ -38,7 +38,7 @@ services:
       # The repo's pre-commit hook needs the dataset toolchain, absent from this image.
       DEEPLORE_DATASET_SKIP_GIT_HOOKS: "true"
     volumes:
-      - /data/Projects/deeplore-mlflow:/opt/deeplore-mlflow:ro
+      - /data/Projects/runleaf:/opt/deeplore-mlflow:ro
       - /data/Projects/mlflow/.local/tracking-server:/data/Projects/mlflow/.local/tracking-server
       # --- dataset releases ---
       # Same path as on the host: metadata.yaml and the registry record absolute paths.
