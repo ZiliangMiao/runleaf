@@ -1,6 +1,6 @@
 /**
  * Lineage canvas: display formatting, then camera controls and card rendering.
- * Naming: format_* produces labels; handle_* responds to pointer interactions.
+ * Naming: format_* produces labels; handle_* responds to canvas interactions.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PointerEvent } from 'react';
@@ -8,7 +8,7 @@ import { Button, useDesignSystemTheme } from '@databricks/design-system';
 import { Link } from '../../../common/utils/RoutingUtils';
 import Routes from '../../routes';
 import { getUUID } from '../../../common/utils/ActionUtils';
-import { LINEAGE_CARD, formatComparison, formatDifference, formatMetric } from './lineageGraph';
+import { LINEAGE_CARD, formatComparison, formatDifference, formatMetric, formatRunHeading } from './lineageGraph';
 import type { LineageLayout } from './lineageGraph';
 
 // ===== Display formatting =====
@@ -23,7 +23,7 @@ const formatLines = (value: string, width = 36): string[] =>
 
 // ===== Camera controls and card rendering =====
 
-/** Render run cards with explicit zoom, pointer panning and click navigation. */
+/** Render run cards with button and wheel zoom, pointer panning and click navigation. */
 export const ExperimentLineageGraph = ({ layout, metricKey }: { layout: LineageLayout; metricKey: string }) => {
   const { theme } = useDesignSystemTheme();
   const viewport = useRef<HTMLDivElement>(null);
@@ -69,18 +69,43 @@ export const ExperimentLineageGraph = ({ layout, metricKey }: { layout: LineageL
     return () => observer.disconnect();
   }, [fit]);
 
-  const zoomBy = (factor: number) => {
+  const zoomBy = useCallback((factor: number, anchorX?: number, anchorY?: number) => {
     const element = viewport.current;
     if (!element) return;
     followsFit.current = false;
-    const centerX = element.clientWidth / 2;
-    const centerY = element.clientHeight / 2;
+    const centerX = anchorX ?? element.clientWidth / 2;
+    const centerY = anchorY ?? element.clientHeight / 2;
     setCamera((current) => {
       const zoom = Math.min(3, Math.max(0.001, current.zoom * factor));
       const ratio = zoom / current.zoom;
       return { zoom, x: centerX - (centerX - current.x) * ratio, y: centerY - (centerY - current.y) * ratio };
     });
-  };
+  }, []);
+
+  useEffect(() => {
+    const element = viewport.current;
+    if (!element) return;
+    const handleWheel = (event: WheelEvent) => {
+      if (!event.deltaY) return;
+      event.preventDefault();
+      if (pointer.current) return;
+      const unit =
+        event.deltaMode === WheelEvent.DOM_DELTA_LINE
+          ? 16
+          : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+          ? element.clientHeight
+          : 1;
+      const bounds = element.getBoundingClientRect();
+      zoomBy(
+        Math.exp(-event.deltaY * unit * 0.002),
+        event.clientX - bounds.left - element.clientLeft,
+        event.clientY - bounds.top - element.clientTop,
+      );
+    };
+    // A non-passive listener prevents page scrolling while zooming the canvas.
+    element.addEventListener('wheel', handleWheel, { passive: false });
+    return () => element.removeEventListener('wheel', handleWheel);
+  }, [zoomBy]);
 
   const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 || !event.isPrimary) return;
@@ -135,7 +160,7 @@ export const ExperimentLineageGraph = ({ layout, metricKey }: { layout: LineageL
           Fit graph
         </Button>
         <span css={{ color: theme.colors.textSecondary, marginLeft: 8 }}>
-          Drag to pan. Select a run to open it. Dashed cards: external parents.
+          Scroll to zoom. Drag to pan. Select a run to open it. Dashed cards: external parents.
         </span>
       </div>
       <div
@@ -287,7 +312,7 @@ export const ExperimentLineageGraph = ({ layout, metricKey }: { layout: LineageL
                     fill={color}
                     fontWeight={700}
                   >
-                    {node.runSequence ?? '--'}
+                    {formatRunHeading(node)}
                   </text>
                   {(
                     [
@@ -329,7 +354,7 @@ export const ExperimentLineageGraph = ({ layout, metricKey }: { layout: LineageL
                             : '#15803d'
                         }
                       >
-                        <title>{`Compared with ${comparison.baseRunSequence ?? comparison.baseRunId}: ${
+                        <title>{`Compared with ${comparison.baseRunNumber ?? comparison.baseRunId}: ${
                           comparison.difference === undefined
                             ? 'Metric unavailable for current run or base run'
                             : formatDifference(comparison.difference)
