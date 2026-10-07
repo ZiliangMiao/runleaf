@@ -10,10 +10,10 @@ import type { ExperimentEntity, RunEntity } from '../../types';
 export type LineageNode = {
   runId: string;
   runName: string;
-  runSequence?: string;
+  runNumber?: string;
   modelName?: string;
   change?: string;
-  metricComparisons: { baseRunId: string; baseRunSequence?: string; difference?: number }[];
+  metricComparisons: { baseRunId: string; baseRunNumber?: string; difference?: number }[];
   experimentId?: string;
   experimentName?: string;
   metric?: number;
@@ -43,41 +43,72 @@ const splitTag = (value?: string): string[] =>
     .map((part) => part.trim())
     .filter(Boolean);
 
+/** Match deeplore_core's project field in valid <project>-<suffix> experiment names. */
+export const buildExperimentProject = (name: string): string | undefined => {
+  const separator = name.indexOf('-');
+  const project = name.slice(0, separator);
+  return separator > 0 && !/\s/.test(project) && name.slice(separator + 1).trim() ? project : undefined;
+};
+
+const buildRunName = (run: RunEntity): string =>
+  run.data.tags?.find((tag) => tag.key === 'mlflow.runName')?.value || run.info.runName || run.info.runUuid;
+
 const buildLineageNode = (
   run: RunEntity,
   experimentNames: Map<string, string>,
-  metricKey: string,
+  metricValues: ReadonlyMap<string, number>,
   isExternal: boolean,
 ): LineageNode => {
   const tags = new Map((run.data.tags ?? []).map((tag) => [tag.key, tag.value]));
-  const metric = run.data.metrics?.find((candidate) => candidate.key === metricKey)?.value;
+  const metric = metricValues.get(run.info.runUuid);
+  const datasetVersions = (run.inputs?.datasetInputs ?? []).flatMap((input) => {
+    const inputTags = new Map(input.tags.map((tag) => [tag.key, tag.value]));
+    if (!['training', 'train', 'validation', 'val', 'trainval'].includes(inputTags.get('mlflow.data.context') ?? '')) {
+      return [];
+    }
+    const version = inputTags.get('version') || inputTags.get('trainval_version') || inputTags.get('data_version');
+    return version ? [version] : [];
+  });
   return {
     runId: run.info.runUuid,
-    runName: tags.get('mlflow.runName') || run.info.runName || run.info.runUuid,
-    runSequence: tags.get('run_seq') || undefined,
-    modelName: tags.get('model_name') || undefined,
+    runName: buildRunName(run),
+    runNumber: tags.get('run_num') || undefined,
+    modelName: tags.get('model') || undefined,
     change: tags.get('change') || undefined,
     experimentId: run.info.experimentId,
     experimentName: experimentNames.get(run.info.experimentId) ?? run.info.experimentId,
     metric: Number.isFinite(metric) ? metric : undefined,
     metricComparisons: [],
-    datasetVersion: tags.get('trainval_version') || undefined,
+    datasetVersion: [...new Set(datasetVersions)].join(', ') || undefined,
     status: run.info.status,
     isExternal,
     isRoot: !isExternal,
   };
 };
 
-/** Build rename-safe parent edges using the same tags as deeplore_core.mlflow_run. */
+/** Resolve base_run names only when exactly one active run in the same project matches. */
 export const buildLineageGraph = (
   runs: RunEntity[],
   experiments: Pick<ExperimentEntity, 'experimentId' | 'name'>[],
-  metricKey: string,
+  metricValues: ReadonlyMap<string, number>,
   baseRuns: RunEntity[] = [],
 ): LineageGraph => {
   const experimentNames = new Map(experiments.map((experiment) => [experiment.experimentId, experiment.name]));
-  const uniqueRuns = new Map(runs.map((run) => [run.info.runUuid, run]));
-  const externalRuns = new Map(baseRuns.map((run) => [run.info.runUuid, run]));
+  const uniqueRuns = new Map(
+    runs.filter((run) => run.info.lifecycleStage !== 'deleted').map((run) => [run.info.runUuid, run]),
+  );
+  const candidateRuns = new Map(
+    [...baseRuns, ...runs].filter((run) => run.info.lifecycleStage !== 'deleted').map((run) => [run.info.runUuid, run]),
+  );
+  const buildProjectKey = (run: RunEntity): string => {
+    const project = buildExperimentProject(experimentNames.get(run.info.experimentId) ?? '');
+    return project ? `project:${project}` : `experiment:${run.info.experimentId}`;
+  };
+  const parentsByName = new Map<string, RunEntity[]>();
+  for (const run of candidateRuns.values()) {
+    const key = JSON.stringify([buildProjectKey(run), buildRunName(run)]);
+    parentsByName.set(key, [...(parentsByName.get(key) ?? []), run]);
+  }
   const orderedRuns = [...uniqueRuns.values()].sort(
     (left, right) =>
       (left.info.startTime || 0) - (right.info.startTime || 0) || left.info.runUuid.localeCompare(right.info.runUuid),
@@ -86,31 +117,31 @@ export const buildLineageGraph = (
   const edges: LineageEdge[] = [];
 
   for (const run of orderedRuns) {
-    nodes.set(run.info.runUuid, buildLineageNode(run, experimentNames, metricKey, false));
+    nodes.set(run.info.runUuid, buildLineageNode(run, experimentNames, metricValues, false));
   }
 
   for (const run of orderedRuns) {
     const tags = new Map((run.data.tags ?? []).map((tag) => [tag.key, tag.value]));
     const parentNames = splitTag(tags.get('base_run'));
-    const parentSequences = (tags.get('base_run_seq') ?? '').split(',').map((sequence) => sequence.trim() || undefined);
     const seenParents = new Set<string>();
-    splitTag(tags.get('base_run_id')).forEach((parentId, index) => {
-      // Names label external parents; only immutable IDs establish relationships.
-      if (parentId.toLowerCase() === 'none' || seenParents.has(parentId)) return;
-      seenParents.add(parentId);
+    parentNames.forEach((parentName) => {
+      if (parentName.toLowerCase() === 'none' || seenParents.has(parentName)) return;
+      seenParents.add(parentName);
+      const parentKey = JSON.stringify([buildProjectKey(run), parentName]);
+      const matches = parentsByName.get(parentKey) ?? [];
+      const parentRun = matches.length === 1 ? matches[0] : undefined;
+      const parentId = parentRun?.info.runUuid ?? `missing:${parentKey}`;
       if (!nodes.has(parentId)) {
-        const parentRun = externalRuns.get(parentId);
         const parent: LineageNode = parentRun
-          ? buildLineageNode(parentRun, experimentNames, metricKey, true)
+          ? buildLineageNode(parentRun, experimentNames, metricValues, true)
           : {
               runId: parentId,
-              runName: parentNames[index] || parentId,
-              runSequence: parentSequences[index],
+              runName: parentName,
               metricComparisons: [],
+              status: matches.length > 1 ? 'AMBIGUOUS' : 'MISSING',
               isExternal: true,
               isRoot: false,
             };
-        parent.runSequence ??= parentSequences[index];
         nodes.set(parentId, parent);
       }
       const child = nodes.get(run.info.runUuid);
@@ -121,7 +152,7 @@ export const buildLineageGraph = (
           child.metric !== undefined && parent?.metric !== undefined ? child.metric - parent.metric : undefined;
         child.metricComparisons.push({
           baseRunId: parentId,
-          baseRunSequence: parent?.runSequence || parentSequences[index],
+          baseRunNumber: parent?.runNumber,
           difference: Number.isFinite(difference) ? difference : undefined,
         });
       }
@@ -150,7 +181,7 @@ export const validateLineageGraph = (graph: LineageGraph): void => {
     }
   }
   if (queue.length !== graph.nodes.length) {
-    throw new Error('Run lineage contains a cycle. Correct the base_run_id tags before viewing the graph.');
+    throw new Error('Run lineage contains a cycle. Correct the base_run tags before viewing the graph.');
   }
 };
 
@@ -170,6 +201,12 @@ export const LINEAGE_CARD = {
 export const formatMetric = (value?: number): string =>
   value === undefined ? '--' : Number.isFinite(value) ? value.toFixed(3) : String(value);
 
+/** Keep unresolved historical references visible without presenting a clickable run. */
+export const formatRunHeading = (node: LineageNode): string =>
+  node.experimentId
+    ? node.runNumber || '--'
+    : `${node.runName} (${node.status === 'AMBIGUOUS' ? 'ambiguous' : 'missing'})`;
+
 export const formatDifference = (value?: number): string => {
   if (value === undefined) return '--';
   if (value === 0) return '0';
@@ -180,7 +217,7 @@ export const formatDifference = (value?: number): string => {
 
 /** Keep metric comparison labels identical in sizing and rendering. */
 export const formatComparison = (comparison: LineageNode['metricComparisons'][number], showBase: boolean): string =>
-  `${showBase ? `${comparison.baseRunSequence ?? comparison.baseRunId.slice(0, 8)} ` : ''}${formatDifference(
+  `${showBase ? `${comparison.baseRunNumber ?? comparison.baseRunId.slice(0, 8)} ` : ''}${formatDifference(
     comparison.difference,
   )}`;
 
@@ -230,7 +267,7 @@ export const buildLineageLayout = (lineage: LineageGraph): LineageLayout => {
           240,
           LINEAGE_CARD.padding * 2 +
             2 +
-            Math.max(LINEAGE_CARD.valueOffset + fieldWidth, measureText(node.runSequence || '--', 700)),
+            Math.max(LINEAGE_CARD.valueOffset + fieldWidth, measureText(formatRunHeading(node), 700)),
         ),
       ),
       height: LINEAGE_CARD.height,
