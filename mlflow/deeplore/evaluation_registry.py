@@ -1,8 +1,9 @@
 """Benchmark evaluation records stored beside MLflow's tracking tables.
 
-Sections: Tables, Validation, Records. Each evaluation owns its result and
-provenance snapshot; run artifacts remain owned by MLflow's artifact store.
-Historical imports keep the original row and refuse conflicting replacements.
+Sections: Tables, Validation, Records. Each evaluation owns its metrics and
+parameters; checkpoint artifacts remain owned by MLflow's artifact store.
+Each run has one current result for each dataset name and known test hash.
+All content hashes use MD5. Previously imported results remain readable.
 
 Naming table: ``validate_*`` checks input, ``create_*`` inserts, ``get_*`` reads
 one record, and ``list_*`` reads a collection.
@@ -10,7 +11,6 @@ one record, and ``list_*`` reads a collection.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import re
@@ -28,16 +28,14 @@ from sqlalchemy import (
     Column,
     ForeignKey,
     Index,
-    Integer,
     String,
     Text,
-    UniqueConstraint,
 )
 from sqlalchemy.orm import aliased, declarative_base
 
 from mlflow.deeplore import dataset_registry
 from mlflow.exceptions import MlflowException
-from mlflow.protos.databricks_pb2 import INVALID_PARAMETER_VALUE, RESOURCE_CONFLICT
+from mlflow.protos.databricks_pb2 import INVALID_PARAMETER_VALUE
 from mlflow.store.tracking.dbmodels.models import (
     SqlDataset,
     SqlInput,
@@ -61,18 +59,22 @@ _initialization_lock = threading.Lock()
 
 
 class SqlEvaluation(_Base):
-    """Own one immutable evaluation and its migration provenance.
+    """Own one current evaluation and its dataset identity.
 
     Dataset identities are validated against the dataset catalog. Checkpoint
-    bytes and detailed reports remain in the associated run's artifact store.
+    bytes remain in the associated run's artifact store.
     """
 
     __tablename__ = "deeplore_evaluations"
     __table_args__ = (
-        UniqueConstraint(
-            "run_id", "source_artifact", "source_row", name="evaluation_source_key"
-        ),
         Index("index_deeplore_evaluations_run_time", "run_id", "evaluated_at"),
+        Index(
+            "index_deeplore_evaluations_run_dataset_test",
+            "run_id",
+            "dataset_name",
+            "test_hash",
+            unique=True,
+        ),
         CheckConstraint(
             "association_status IN ('confirmed', 'pending')",
             name="evaluation_association_status",
@@ -92,41 +94,32 @@ class SqlEvaluation(_Base):
     dataset_version = Column(String(64))
     association_status = Column(String(16), nullable=False)
     benchmark_name = Column(String(256), nullable=False)
-    test_hash = Column(String(256))
+    test_hash = Column(String(36))
     ckpt_path = Column(String(1024))
-    ckpt_hash = Column(String(256))
-    ckpt_hash_algorithm = Column(String(64))
+    ckpt_hash = Column(String(32))
     evaluated_at = Column(BigInteger)
     metrics_json = Column(Text, nullable=False)
-    artifact_path = Column(String(1024))
-    source_artifact = Column(String(1024))
-    source_row = Column(Integer)
-    source_digest = Column(String(64))
+    params_json = Column(Text, nullable=False)
     metadata_json = Column(Text, nullable=False)
     created_at = Column(BigInteger, nullable=False)
 
     # ---- Serialization ----
 
     def to_dict(self) -> dict[str, Any]:
-        """Return the stored result and provenance as JSON-compatible values."""
+        """Return the evaluation without internal dataset evidence."""
         return {
             "evaluation_id": self.evaluation_id,
             "run_id": self.run_id,
             "dataset_name": self.dataset_name,
             "dataset_version": self.dataset_version,
             "association_status": self.association_status,
-            "benchmark_name": self.benchmark_name,
+            "benchmark_name": self.dataset_name or self.benchmark_name,
             "test_hash": self.test_hash,
             "ckpt_path": self.ckpt_path,
             "ckpt_hash": self.ckpt_hash,
-            "ckpt_hash_algorithm": self.ckpt_hash_algorithm,
             "evaluated_at": self.evaluated_at,
             "metrics": json.loads(self.metrics_json),
-            "artifact_path": self.artifact_path,
-            "source_artifact": self.source_artifact,
-            "source_row": self.source_row,
-            "source_digest": self.source_digest,
-            "metadata": json.loads(self.metadata_json),
+            "params": json.loads(self.params_json),
             "created_at": self.created_at,
         }
 
@@ -290,66 +283,141 @@ def validate_dataset_version(
     }
 
 
-def _validate_record(record: dict[str, Any], allow_incomplete: bool) -> dict[str, Any]:
+def validate_dataset_test(
+    store: SqlAlchemyStore,
+    name: str,
+    version: str,
+    test_hash: str,
+) -> dict[str, Any]:
+    """Verify that a dataset version used the requested test content hash.
+
+    Args:
+        store: The tracking server's SQL store.
+        name: Dataset name.
+        version: Dataset version.
+        test_hash: Complete normalized test content hash.
+
+    Returns:
+        Server-owned evidence for the matching identity and test content.
+
+    Raises:
+        MlflowException: If no current or historical evidence matches all fields.
+    """
+    identity = validate_dataset_version(store, name, version)
+    for released in dataset_registry.list_dataset_versions(store, name):
+        content_hash = released["hashes"].get("test")
+        if (
+            released["version"] == version
+            and isinstance(content_hash, str)
+            and content_hash
+        ):
+            if content_hash.lower() != test_hash:
+                raise _invalid(
+                    "test_hash does not match the registered test content for "
+                    f"dataset {name!r} {version!r}: expected {content_hash.lower()!r}"
+                )
+            return {
+                "source": "dataset_release",
+                "name": name,
+                "version": version,
+                "test_hash": test_hash,
+            }
+    with _session(store) as session:
+        previous = session.execute(
+            sqlalchemy.select(SqlEvaluation)
+            .where(
+                SqlEvaluation.dataset_name == name,
+                SqlEvaluation.dataset_version == version,
+                SqlEvaluation.test_hash == test_hash,
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+        if previous is not None:
+            return {**identity, "test_hash": test_hash}
+        context = aliased(SqlInputTag)
+        split = aliased(SqlInputTag)
+        native = session.execute(
+            sqlalchemy.select(SqlDataset.dataset_uuid, SqlInput.destination_id)
+            .join(SqlInput, SqlInput.source_id == SqlDataset.dataset_uuid)
+            .join(SqlInputTag, SqlInputTag.input_uuid == SqlInput.input_uuid)
+            .join(context, context.input_uuid == SqlInput.input_uuid)
+            .join(split, split.input_uuid == SqlInput.input_uuid)
+            .where(
+                SqlDataset.name == name,
+                SqlInput.source_type == "DATASET",
+                SqlInput.destination_type == "RUN",
+                SqlInputTag.name.in_(("version", "test_version")),
+                SqlInputTag.value == version,
+                context.name == "mlflow.data.context",
+                context.value == "evaluation",
+                split.name == "split_md5",
+                sqlalchemy.func.lower(split.value) == test_hash,
+            )
+            .order_by(SqlDataset.dataset_uuid, SqlInput.destination_id)
+            .limit(1)
+        ).first()
+        if native is not None:
+            return {
+                "source": "mlflow_dataset_input",
+                "name": name,
+                "version": version,
+                "test_hash": test_hash,
+                "dataset_id": native.dataset_uuid,
+                "run_id": native.destination_id,
+            }
+
+    from mlflow.deeplore.dataset_api import build_dataset_summary, find_dataset
+    from mlflow.deeplore.dataset_release import parse_hashes
+
+    try:
+        metadata = build_dataset_summary(find_dataset(name), []).get("metadata") or {}
+    except MlflowException as error:
+        if error.error_code != "RESOURCE_DOES_NOT_EXIST":
+            raise
+        metadata = {}
+    content_hash = parse_hashes(metadata).get("test")
+    if (
+        metadata.get("version") == version
+        and isinstance(content_hash, str)
+        and content_hash.lower() == test_hash
+    ):
+        return {
+            "source": "dataset_current",
+            "name": name,
+            "version": version,
+            "test_hash": test_hash,
+        }
+    raise _invalid(
+        f"test_hash does not match known test content for dataset {name!r} {version!r}"
+    )
+
+
+def _validate_record(record: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(record, dict):
         raise _invalid("evaluation must be a JSON object")
     fields: dict[str, Any] = {}
     for key, limit in (("dataset_name", 256), ("dataset_version", 64)):
-        fields[key] = _validate_text(record, key, limit, not allow_incomplete)
-    fields["association_status"] = (
-        "confirmed"
-        if fields["dataset_name"] and fields["dataset_version"]
-        else "pending"
-    )
-    fields["benchmark_name"] = _validate_text(record, "benchmark_name", 256, True)
-    for key in ("test_hash", "ckpt_hash"):
-        fields[key] = _validate_text(record, key, 256, not allow_incomplete)
-    test_hash = fields["test_hash"]
-    if (
-        test_hash is not None
-        and re.fullmatch(r"(?:[0-9a-fA-F]{32}|[0-9a-fA-F]{64})(?:\.dir)?", test_hash)
-        is None
+        fields[key] = _validate_text(record, key, limit, True)
+    fields["association_status"] = "confirmed"
+    fields["benchmark_name"] = fields["dataset_name"]
+    for key, pattern, limit in (
+        ("test_hash", r"[0-9a-fA-F]{32}(?:\.dir)?", 36),
+        ("ckpt_hash", r"[0-9a-fA-F]{32}", 32),
     ):
-        raise _invalid(
-            "test_hash must be a 32- or 64-character hexadecimal digest, optionally .dir"
-        )
-    fields["ckpt_hash_algorithm"] = _validate_text(
-        record, "ckpt_hash_algorithm", 64, not allow_incomplete
-    )
-    algorithm = fields["ckpt_hash_algorithm"]
-    checkpoint_hash = fields["ckpt_hash"]
-    if algorithm is not None and algorithm not in ("md5", "sha256"):
-        raise _invalid("ckpt_hash_algorithm must be md5 or sha256")
-    if algorithm is not None and checkpoint_hash is not None:
-        length = 32 if algorithm == "md5" else 64
-        if (
-            len(checkpoint_hash) != length
-            or re.fullmatch("[0-9a-fA-F]+", checkpoint_hash) is None
-        ):
-            raise _invalid(
-                f"ckpt_hash must be a {length}-character hexadecimal {algorithm} digest"
-            )
-    elif checkpoint_hash is not None and (
-        len(checkpoint_hash) not in (32, 64)
-        or re.fullmatch("[0-9a-fA-F]+", checkpoint_hash) is None
-    ):
-        raise _invalid(
-            "historical ckpt_hash must be a 32- or 64-character hexadecimal digest"
-        )
-    fields["ckpt_path"] = _validate_text(
-        record, "ckpt_path", 1024, not allow_incomplete
-    )
-    for key in ("artifact_path", "source_artifact"):
-        fields[key] = _validate_text(record, key, 1024, False)
-    for key in ("ckpt_path", "artifact_path", "source_artifact"):
-        _validate_artifact_path(fields[key], key)
+        value = _validate_text(record, key, limit, True)
+        if re.fullmatch(pattern, value) is None:
+            suffix = ", optionally .dir" if key == "test_hash" else ""
+            raise _invalid(f"{key} must be a complete hexadecimal MD5 digest{suffix}")
+        fields[key] = value.lower()
+    fields["ckpt_path"] = _validate_text(record, "ckpt_path", 1024, True)
+    _validate_artifact_path(fields["ckpt_path"], "ckpt_path")
 
     evaluated_at = record.get("evaluated_at")
     if evaluated_at is not None and (type(evaluated_at) is not int or evaluated_at < 0):
         raise _invalid(
             "evaluated_at must be a nonnegative Unix timestamp in milliseconds"
         )
-    if evaluated_at is None and not allow_incomplete:
+    if evaluated_at is None:
         raise _invalid("evaluated_at is required")
     fields["evaluated_at"] = evaluated_at
 
@@ -359,8 +427,6 @@ def _validate_record(record: dict[str, Any], allow_incomplete: bool) -> dict[str
     for key, value in metrics.items():
         if not isinstance(key, str) or not key:
             raise _invalid("metric names must be nonempty strings")
-        if value is None and allow_incomplete:
-            continue
         if (
             isinstance(value, bool)
             or not isinstance(value, (int, float))
@@ -369,136 +435,98 @@ def _validate_record(record: dict[str, Any], allow_incomplete: bool) -> dict[str
             raise _invalid(f"metric {key!r} must be a finite number")
     fields["metrics_json"] = _validate_json(metrics, "metrics")
 
-    metadata = record.get("metadata", {})
-    if not isinstance(metadata, dict):
-        raise _invalid("metadata must be a JSON object")
-    fields["metadata_json"] = _validate_json(metadata, "metadata")
-    fields["source_row"] = record.get("source_row")
-    fields["source_digest"] = None
-    if fields["source_artifact"] is not None or fields["source_row"] is not None:
-        if fields["source_artifact"] is None or type(fields["source_row"]) is not int:
+    parameters = record.get("params", {})
+    if not isinstance(parameters, dict):
+        raise _invalid("params must be a JSON object")
+    for key, value in parameters.items():
+        if not isinstance(key, str) or not key:
+            raise _invalid("parameter names must be nonempty strings")
+        if value is not None and not isinstance(value, (str, int, float, bool)):
             raise _invalid(
-                "source_artifact and an integer source_row must be supplied together"
+                f"parameter {key!r} must be a string, number, boolean or null"
             )
-        if fields["source_row"] < 0:
-            raise _invalid("source_row must be a zero-based nonnegative row index")
-        if not isinstance(metadata.get("original_record"), dict):
-            raise _invalid("imported evaluations require metadata.original_record")
-        original = _validate_json(
-            metadata["original_record"], "metadata.original_record"
-        )
-        fields["source_digest"] = hashlib.sha256(original.encode("utf-8")).hexdigest()
-    if allow_incomplete:
-        if fields["source_digest"] is None:
-            raise _invalid(
-                "historical imports require source_artifact, source_row and original_record"
-            )
-        reasons = metadata.get("incomplete_reasons", {})
-        for key in (
-            "dataset_name",
-            "dataset_version",
-            "test_hash",
-            "ckpt_hash",
-            "ckpt_path",
-            "evaluated_at",
-        ):
-            if fields[key] is None and (
-                not isinstance(reasons, dict)
-                or not isinstance(reasons.get(key), str)
-                or not reasons[key].strip()
-            ):
-                raise _invalid(
-                    f"missing historical {key} requires metadata.incomplete_reasons.{key}"
-                )
+        if isinstance(value, float) and not math.isfinite(value):
+            raise _invalid(f"parameter {key!r} must be finite")
+    fields["params_json"] = _validate_json(parameters, "params")
+
     return fields
 
 
 # ===== Records =====
 
 
-def _get_existing_source(
+def _get_matching_evaluation(
     session: Session, run_id: str, fields: dict[str, Any]
 ) -> SqlEvaluation | None:
-    if fields["source_digest"] is None:
+    if fields["dataset_name"] is None or fields["test_hash"] is None:
         return None
     return session.execute(
-        sqlalchemy.select(SqlEvaluation).where(
+        sqlalchemy.select(SqlEvaluation)
+        .where(
             SqlEvaluation.run_id == run_id,
-            SqlEvaluation.source_artifact == fields["source_artifact"],
-            SqlEvaluation.source_row == fields["source_row"],
+            SqlEvaluation.dataset_name == fields["dataset_name"],
+            SqlEvaluation.test_hash == fields["test_hash"],
         )
+        .with_for_update()
     ).scalar_one_or_none()
 
 
-def _validate_existing_source(
-    row: SqlEvaluation, fields: dict[str, Any]
-) -> dict[str, Any]:
-    if row.source_digest != fields["source_digest"]:
-        raise MlflowException(
-            "the source artifact row was already imported with different content; "
-            "the stored evaluation was preserved",
-            error_code=RESOURCE_CONFLICT,
-        )
-    return row.to_dict()
+def _write_evaluation(
+    session: Session, run_id: str, fields: dict[str, Any]
+) -> tuple[dict[str, Any], bool, str]:
+    with session.begin_nested():
+        row = _get_matching_evaluation(session, run_id, fields)
+        created = row is None
+        if created:
+            row = SqlEvaluation(
+                evaluation_id=uuid.uuid4().hex,
+                run_id=run_id,
+                created_at=int(time.time() * 1000),
+                **fields,
+            )
+            session.add(row)
+        else:
+            for key, value in fields.items():
+                setattr(row, key, value)
+        session.flush()
+        return row.to_dict(), created, "created" if created else "updated"
 
 
 def create_evaluation(
     store: SqlAlchemyStore,
     run_id: str,
     record: dict[str, Any],
-    *,
-    allow_incomplete: bool = False,
-) -> tuple[dict[str, Any], bool]:
-    """Record an evaluation, retaining each historical source row exactly once.
+) -> tuple[dict[str, Any], bool, str]:
+    """Replace a run's result for one dataset test hash while preserving its identity.
 
     Args:
         store: The tracking server's SQL store.
-        run_id: Run that owns the evaluated checkpoint and reports.
-        record: Evaluation identity, metrics and provenance fields.
-        allow_incomplete: Permit documented missing fields in historical imports.
+        run_id: Run that owns the evaluated checkpoint.
+        record: Complete evaluation identity, metrics and parameters.
 
     Returns:
-        The persisted evaluation and whether this call inserted it.
+        The current evaluation, whether it was created, and the write action.
 
     Raises:
-        MlflowException: If the run, dataset identity or payload is invalid, or
-            an imported source row conflicts with an earlier import.
+        MlflowException: If the dataset identity or payload is invalid.
     """
-    fields = _validate_record(record, allow_incomplete)
+    fields = _validate_record(record)
     store.get_run(run_id)
-    if fields["association_status"] == "confirmed":
-        evidence = validate_dataset_version(
-            store, fields["dataset_name"], fields["dataset_version"]
-        )
-    else:
-        evidence = {
-            "source": "unresolved",
-            "name": fields["dataset_name"],
-            "version": fields["dataset_version"],
-        }
-    metadata = json.loads(fields["metadata_json"])
-    metadata["dataset_identity"] = evidence
-    fields["metadata_json"] = _validate_json(metadata, "metadata")
+    evidence = validate_dataset_test(
+        store,
+        fields["dataset_name"],
+        fields["dataset_version"],
+        fields["test_hash"],
+    )
+    fields["metadata_json"] = _validate_json(
+        {"dataset_identity": evidence}, "dataset identity"
+    )
     with _session(store) as session:
-        existing = _get_existing_source(session, run_id, fields)
-        if existing is not None:
-            return _validate_existing_source(existing, fields), False
-        row = SqlEvaluation(
-            evaluation_id=uuid.uuid4().hex,
-            run_id=run_id,
-            created_at=int(time.time() * 1000),
-            **fields,
-        )
         try:
-            with session.begin_nested():
-                session.add(row)
-                session.flush()
+            return _write_evaluation(session, run_id, fields)
         except sqlalchemy.exc.IntegrityError:
-            existing = _get_existing_source(session, run_id, fields)
-            if existing is None:
-                raise
-            return _validate_existing_source(existing, fields), False
-        return row.to_dict(), True
+            # The unique key resolves simultaneous first writes; retry under its row lock.
+            return _write_evaluation(session, run_id, fields)
 
 
 def list_evaluations(store: SqlAlchemyStore, run_id: str) -> list[dict[str, Any]]:

@@ -1,8 +1,8 @@
 """Run evaluation endpoints for the Deeplore tracking server.
 
 Sections: Store, Validation, Handlers, Routes. Normal writes require complete
-identity and provenance. Historical imports retain original rows and explain
-missing values, while using the same dataset identity validation.
+identity and provenance. Content hashes are complete MD5 digests, and previously
+imported results remain available through the read endpoints.
 
 Naming table: ``validate_*`` checks provenance, ``handle_*`` serves requests,
 and ``register_*`` attaches routes.
@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from flask import Flask, Response, jsonify, request
 
 from mlflow.deeplore import evaluation_registry as registry
+from mlflow.deeplore.benchmark_api import handle_list_benchmarks
 from mlflow.exceptions import MlflowException
 from mlflow.protos.databricks_pb2 import (
     FEATURE_DISABLED,
@@ -98,23 +99,10 @@ def handle_create_evaluation(run_id: str) -> Response:
     record = _get_record()
     store = _get_store()
     store.get_run(run_id)
-    registry._validate_record(record, allow_incomplete=False)
+    registry._validate_record(record)
     _validate_checkpoint(run_id, record, require_best=True)
-    evaluation, created = registry.create_evaluation(store, run_id, record)
-    return jsonify({"evaluation": evaluation, "created": created})
-
-
-def handle_import_evaluation(run_id: str) -> Response:
-    """Import a historical row with explicit missing provenance and deduplication."""
-    record = _get_record()
-    store = _get_store()
-    store.get_run(run_id)
-    registry._validate_record(record, allow_incomplete=True)
-    _validate_checkpoint(run_id, record)
-    evaluation, created = registry.create_evaluation(
-        store, run_id, record, allow_incomplete=True
-    )
-    return jsonify({"evaluation": evaluation, "created": created})
+    evaluation, created, action = registry.create_evaluation(store, run_id, record)
+    return jsonify({"evaluation": evaluation, "created": created, "action": action})
 
 
 def handle_get_evaluation(evaluation_id: str) -> Response:
@@ -130,9 +118,9 @@ def handle_get_evaluation(evaluation_id: str) -> Response:
 # ===== Routes =====
 
 ROUTES: tuple[tuple[str, Callable[..., Response], str], ...] = (
+    ("/experiments/<experiment_id>/benchmarks", handle_list_benchmarks, "GET"),
     ("/runs/<run_id>/evaluations", handle_list_evaluations, "GET"),
     ("/runs/<run_id>/evaluations", handle_create_evaluation, "POST"),
-    ("/runs/<run_id>/evaluations/import", handle_import_evaluation, "POST"),
     ("/evaluations/<evaluation_id>", handle_get_evaluation, "GET"),
 )
 
