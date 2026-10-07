@@ -5,7 +5,7 @@
 import { useQuery } from '@tanstack/react-query';
 import {
   Alert,
-  Button,
+  ChevronRightIcon,
   Empty,
   Spinner,
   Table,
@@ -54,17 +54,54 @@ const fetchRunEvaluations = async (runUuid: string): Promise<RunEvaluation[]> =>
 
 // ===== Shared fields and lists =====
 
+const EVALUATION_LABEL_WIDTH = 120;
+
 const formatEvaluationTime = (timestamp: number): string =>
   new Date(timestamp).toLocaleString('en-US', { timeZoneName: 'short' });
 
 const EvaluationField = ({ label, children }: { label: string; children: React.ReactNode }) => {
   const { theme } = useDesignSystemTheme();
   return (
-    <div css={{ minWidth: 0 }}>
+    <div css={{ minWidth: 0, maxWidth: '100%' }}>
       <dt css={{ color: theme.colors.textSecondary, marginBottom: theme.spacing.xs }}>{label}</dt>
       <dd css={{ margin: 0, overflowWrap: 'anywhere' }}>
         {children ?? <Typography.Hint>Not recorded</Typography.Hint>}
       </dd>
+    </div>
+  );
+};
+
+const EvaluationRow = ({
+  label,
+  children,
+}: {
+  label: 'evaluation' | 'dataset' | 'checkpoint';
+  children: React.ReactNode;
+}) => {
+  const { theme } = useDesignSystemTheme();
+  return (
+    <div
+      css={{
+        display: 'grid',
+        gridTemplateColumns: `${EVALUATION_LABEL_WIDTH}px minmax(0, 1fr)`,
+        gap: theme.spacing.lg,
+        alignItems: 'start',
+      }}
+    >
+      <Typography.Text bold css={{ paddingLeft: theme.spacing.md + theme.spacing.sm }}>
+        {label}
+      </Typography.Text>
+      <dl
+        css={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+          alignItems: 'start',
+          gap: theme.spacing.lg,
+          margin: 0,
+        }}
+      >
+        {children}
+      </dl>
     </div>
   );
 };
@@ -83,22 +120,45 @@ const EvaluationValues = ({
   label,
   values,
 }: {
-  label: 'Metrics' | 'Params';
+  label: 'metrics' | 'params';
   values: Record<string, string | number | boolean | null>;
 }) => {
   const { theme } = useDesignSystemTheme();
   const entries = Object.entries(values).sort(([left], [right]) => left.localeCompare(right));
   return (
-    <details css={{ marginTop: theme.spacing.md }}>
-      <summary css={{ cursor: 'pointer', color: theme.colors.actionPrimaryBackgroundDefault }}>
-        {label} ({entries.length})
+    <details css={{ '&[open] .evaluation-disclosure-icon': { transform: 'rotate(90deg)' } }}>
+      <summary
+        css={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: theme.spacing.sm,
+          cursor: 'pointer',
+          listStyle: 'none',
+          '&::-webkit-details-marker': { display: 'none' },
+        }}
+      >
+        <ChevronRightIcon className="evaluation-disclosure-icon" css={{ color: theme.colors.textSecondary }} />
+        <Typography.Text bold>{label}</Typography.Text>
+        <Typography.Hint>({entries.length})</Typography.Hint>
       </summary>
       {entries.length ? (
-        <div css={{ overflowX: 'auto', marginTop: theme.spacing.md }}>
-          <Table>
+        <div
+          css={{
+            overflowX: 'auto',
+            marginTop: theme.spacing.md,
+            marginLeft: EVALUATION_LABEL_WIDTH + theme.spacing.lg,
+          }}
+        >
+          <Table
+            noMinHeight
+            css={{
+              '[role="row"] > :first-child': { flex: '0 1 240px', minWidth: 0 },
+              '[role="row"] > :last-child': { flex: '1 1 0', minWidth: 0 },
+            }}
+          >
             <TableRow isHeader>
               <TableHeader componentId="mlflow.run_evaluations.entry_name">
-                {label === 'Metrics' ? 'Metric' : 'Parameter'}
+                {label === 'metrics' ? 'Metric' : 'Parameter'}
               </TableHeader>
               <TableHeader componentId="mlflow.run_evaluations.entry_value">Value</TableHeader>
             </TableRow>
@@ -115,8 +175,10 @@ const EvaluationValues = ({
           </Table>
         </div>
       ) : (
-        <Typography.Paragraph css={{ marginTop: theme.spacing.md }}>
-          {label === 'Metrics' ? 'No metrics recorded.' : 'No parameters recorded.'}
+        <Typography.Paragraph
+          css={{ marginTop: theme.spacing.md, marginBottom: 0, marginLeft: EVALUATION_LABEL_WIDTH + theme.spacing.lg }}
+        >
+          {label === 'metrics' ? 'No metrics recorded.' : 'No parameters recorded.'}
         </Typography.Paragraph>
       )}
     </details>
@@ -135,13 +197,6 @@ const EvaluationRecord = ({
   runUuid: string;
 }) => {
   const { theme } = useDesignSystemTheme();
-  const fieldStyles = {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 320px), 1fr))',
-    gap: theme.spacing.md,
-    margin: 0,
-  };
-
   return (
     <section
       aria-label={`Evaluation ${evaluation.evaluation_id}`}
@@ -149,49 +204,45 @@ const EvaluationRecord = ({
         border: `1px solid ${theme.colors.border}`,
         borderRadius: theme.borders.borderRadiusMd,
         padding: theme.spacing.md,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: theme.spacing.lg,
       }}
     >
-      <div
-        css={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'baseline',
-          flexWrap: 'wrap',
-          gap: theme.spacing.sm,
-          marginBottom: theme.spacing.md,
-        }}
-      >
-        <div css={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: theme.spacing.sm }}>
-          <Typography.Title level={3} withoutMargins>
-            {evaluation.dataset_name ?? 'Pending dataset'}
-          </Typography.Title>
-          {evaluation.association_status === 'pending' && (
-            <Tag componentId="mlflow.run_evaluations.pending_association" color="default">
-              Dataset association pending
-            </Tag>
-          )}
-        </div>
-        <Typography.Hint>
-          {evaluation.evaluated_at === null
-            ? 'Evaluation time not recorded'
-            : `Evaluated: ${formatEvaluationTime(evaluation.evaluated_at)}`}
-        </Typography.Hint>
-      </div>
-      <dl css={fieldStyles}>
-        <EvaluationField label="Evaluation ID">{evaluation.evaluation_id}</EvaluationField>
-        <EvaluationField label="Dataset name">{evaluation.dataset_name}</EvaluationField>
-        <EvaluationField label="Dataset version">{evaluation.dataset_version}</EvaluationField>
-        <EvaluationField label="Test hash">{evaluation.test_hash}</EvaluationField>
-        <EvaluationField label="Checkpoint path">
+      <EvaluationRow label="evaluation">
+        <EvaluationField label="id">{evaluation.evaluation_id}</EvaluationField>
+        <EvaluationField label="time">
+          {evaluation.evaluated_at === null ? null : formatEvaluationTime(evaluation.evaluated_at)}
+        </EvaluationField>
+      </EvaluationRow>
+      <EvaluationRow label="dataset">
+        <EvaluationField label="name">
+          <div css={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: theme.spacing.xs }}>
+            {evaluation.dataset_name ?? <Typography.Hint>Not recorded</Typography.Hint>}
+            {evaluation.association_status === 'pending' && (
+              <Tag
+                componentId="mlflow.run_evaluations.pending_association"
+                color="default"
+                css={{ maxWidth: '100%', whiteSpace: 'normal', height: 'auto' }}
+              >
+                Dataset association pending
+              </Tag>
+            )}
+          </div>
+        </EvaluationField>
+        <EvaluationField label="version">{evaluation.dataset_version}</EvaluationField>
+        <EvaluationField label="hash">{evaluation.test_hash}</EvaluationField>
+      </EvaluationRow>
+      <EvaluationRow label="checkpoint">
+        <EvaluationField label="path">
           {evaluation.ckpt_path ? (
             <EvaluationArtifactLink experimentId={experimentId} runUuid={runUuid} artifactPath={evaluation.ckpt_path} />
           ) : null}
         </EvaluationField>
-        <EvaluationField label="Checkpoint hash">{evaluation.ckpt_hash}</EvaluationField>
-        <EvaluationField label="Recorded time">{formatEvaluationTime(evaluation.created_at)}</EvaluationField>
-      </dl>
-      <EvaluationValues label="Metrics" values={evaluation.metrics} />
-      <EvaluationValues label="Params" values={evaluation.params} />
+        <EvaluationField label="hash">{evaluation.ckpt_hash}</EvaluationField>
+      </EvaluationRow>
+      <EvaluationValues label="params" values={evaluation.params} />
+      <EvaluationValues label="metrics" values={evaluation.metrics} />
     </section>
   );
 };
@@ -210,32 +261,15 @@ export const RunViewEvaluations = ({ experimentId, runUuid }: { experimentId: st
     (left, right) =>
       (right.evaluated_at ?? -Infinity) - (left.evaluated_at ?? -Infinity) || right.created_at - left.created_at,
   );
+  const datasetGroups = new Map<string | null, RunEvaluation[]>();
+  for (const evaluation of records) {
+    const group = datasetGroups.get(evaluation.dataset_name) ?? [];
+    group.push(evaluation);
+    datasetGroups.set(evaluation.dataset_name, group);
+  }
 
   return (
     <div css={{ display: 'flex', flexDirection: 'column', width: '100%', minWidth: 0, paddingTop: theme.spacing.md }}>
-      <div
-        css={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: theme.spacing.md,
-          marginBottom: theme.spacing.md,
-        }}
-      >
-        <div>
-          <Typography.Title level={2} withoutMargins>
-            Evaluations{evaluations.data ? ` (${records.length})` : ''}
-          </Typography.Title>
-          <Typography.Hint>Benchmark results for this run. Most recent evaluations appear first.</Typography.Hint>
-        </div>
-        <Button
-          componentId="mlflow.run_evaluations.refresh"
-          onClick={() => evaluations.refetch()}
-          disabled={evaluations.isFetching}
-        >
-          Refresh
-        </Button>
-      </div>
       {evaluations.isLoading && <Spinner aria-label="Loading evaluations" />}
       {evaluations.isError && (
         <Alert
@@ -251,13 +285,24 @@ export const RunViewEvaluations = ({ experimentId, runUuid }: { experimentId: st
         <Empty title="No evaluations recorded" description="This run has no saved benchmark evaluations." />
       )}
       <div css={{ display: 'flex', flexDirection: 'column', gap: theme.spacing.md, paddingBottom: theme.spacing.md }}>
-        {records.map((evaluation) => (
-          <EvaluationRecord
-            key={evaluation.evaluation_id}
-            evaluation={evaluation}
-            experimentId={experimentId}
-            runUuid={runUuid}
-          />
+        {[...datasetGroups].map(([datasetName, datasetRecords]) => (
+          <section
+            key={datasetName ?? 'pending-dataset'}
+            aria-label={`Dataset ${datasetName ?? 'Pending dataset'}`}
+            css={{ display: 'flex', flexDirection: 'column', gap: theme.spacing.md }}
+          >
+            <Typography.Title level={3} withoutMargins>
+              {datasetName ?? 'Pending dataset'} ({datasetRecords.length})
+            </Typography.Title>
+            {datasetRecords.map((evaluation) => (
+              <EvaluationRecord
+                key={evaluation.evaluation_id}
+                evaluation={evaluation}
+                experimentId={experimentId}
+                runUuid={runUuid}
+              />
+            ))}
+          </section>
         ))}
       </div>
     </div>

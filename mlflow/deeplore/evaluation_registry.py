@@ -67,12 +67,12 @@ class SqlEvaluation(_Base):
 
     __tablename__ = "deeplore_evaluations"
     __table_args__ = (
-        Index("index_deeplore_evaluations_run_time", "run_id", "evaluated_at"),
+        Index("index_deeplore_evaluations_run_time", "run_id", "evaluation_time"),
         Index(
             "index_deeplore_evaluations_run_dataset_test",
             "run_id",
             "dataset_name",
-            "test_hash",
+            "dataset_hash",
             unique=True,
         ),
         CheckConstraint(
@@ -94,12 +94,13 @@ class SqlEvaluation(_Base):
     dataset_version = Column(String(64))
     association_status = Column(String(16), nullable=False)
     benchmark_name = Column(String(256), nullable=False)
-    test_hash = Column(String(36))
-    ckpt_path = Column(String(1024))
-    ckpt_hash = Column(String(32))
-    evaluated_at = Column(BigInteger)
-    metrics_json = Column(Text, nullable=False)
-    params_json = Column(Text, nullable=False)
+    # Keep API attributes stable while storage names match the evaluation card.
+    test_hash = Column("dataset_hash", String(36))
+    ckpt_path = Column("checkpoint_path", String(1024))
+    ckpt_hash = Column("checkpoint_hash", String(32))
+    evaluated_at = Column("evaluation_time", BigInteger)
+    metrics_json = Column("metrics", Text, nullable=False)
+    params_json = Column("params", Text, nullable=False)
     metadata_json = Column(Text, nullable=False)
     created_at = Column(BigInteger, nullable=False)
 
