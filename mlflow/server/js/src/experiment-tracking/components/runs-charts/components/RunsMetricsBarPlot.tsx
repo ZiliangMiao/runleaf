@@ -57,6 +57,15 @@ export interface RunsMetricsBarPlotProps extends RunsPlotsCommonProps {
    * Display metric key on the X axis
    */
   displayMetricKey?: boolean;
+
+  /** Display the run legend below the plot. */
+  displayLegend?: boolean;
+
+  /** Reserve one top-to-bottom row per run, including hidden or missing values. */
+  orderedRunIds?: string[];
+
+  /** Override displayed metric labels with Plotly-compatible rich text by run ID. */
+  valueLabels?: Record<string, string>;
 }
 
 const PLOT_CONFIG: Partial<Config> = {
@@ -95,21 +104,47 @@ export const RunsMetricsBarPlot = React.memo(
     displayRunNames = true,
     useDefaultHoverBox = true,
     displayMetricKey = true,
+    displayLegend = true,
+    orderedRunIds,
+    valueLabels,
     selectedRunUuid,
     onSetDownloadHandler,
   }: RunsMetricsBarPlotProps) => {
+    const displayedRunsData = useMemo(() => {
+      if (!orderedRunIds) return runsData;
+      const runsById = new Map(runsData.map((run) => [run.uuid, run]));
+      return orderedRunIds.map((uuid): BarPlotRunData => {
+        const run = runsById.get(uuid) ?? { uuid, displayName: uuid, metrics: {} };
+        return run.hidden ? { ...run, metrics: {} } : run;
+      });
+    }, [runsData, orderedRunIds]);
+
+    const orderedYAxis = useMemo<Partial<Layout['yaxis']>>(
+      () => ({
+        type: orderedRunIds ? 'category' : undefined,
+        categoryorder: orderedRunIds ? 'array' : undefined,
+        categoryarray: orderedRunIds,
+        autorange: orderedRunIds ? false : undefined,
+        range: orderedRunIds ? [Math.max(orderedRunIds.length, 1) - 0.5, -0.5] : undefined,
+      }),
+      [orderedRunIds],
+    );
+
     const plotData = useMemo(() => {
       // Run uuids
-      const ids = runsData.map((d) => d.uuid);
+      const ids = displayedRunsData.map((d) => d.uuid);
 
       // Trace names
-      const names = runsData.map(({ displayName }) => displayName);
+      const names = displayedRunsData.map(({ displayName }) => displayName);
 
       // Actual metric values
-      const values = runsData.map((d) => normalizeChartValue(d.metrics[metricKey]?.value));
+      const values = displayedRunsData.map((d) => normalizeChartValue(d.metrics[metricKey]?.value));
 
       // Displayed metric values
-      const textValues = runsData.map((d) => {
+      const textValues = displayedRunsData.map((d) => {
+        if (valueLabels) {
+          return valueLabels[d.uuid];
+        }
         const customMetricBehaviorDef = customMetricBehaviorDefs[metricKey];
         if (customMetricBehaviorDef) {
           return customMetricBehaviorDef.valueFormatter({ value: d.metrics[metricKey]?.value });
@@ -119,7 +154,7 @@ export const RunsMetricsBarPlot = React.memo(
       });
 
       // Colors corresponding to each run
-      const colors = runsData.map((d) => d.color);
+      const colors = displayedRunsData.map((d) => d.color);
 
       return [
         {
@@ -127,11 +162,11 @@ export const RunsMetricsBarPlot = React.memo(
           x: values,
           names,
           text: textValues,
-          textposition: values.map((value) => (value === 0 ? 'outside' : 'auto')),
+          textposition: valueLabels ? 'none' : values.map((value) => (value === 0 ? 'outside' : 'auto')),
           textfont: {
             size: 11,
           },
-          metrics: runsData.map((d) => d.metrics[metricKey]),
+          metrics: displayedRunsData.map((d) => d.metrics[metricKey]),
           // Display run name on hover. "<extra></extra>" removes plotly's "extra" tooltip that
           // is unnecessary here.
           type: 'bar' as any,
@@ -146,19 +181,49 @@ export const RunsMetricsBarPlot = React.memo(
           },
         } as Data & { names: string[] },
       ];
-    }, [runsData, metricKey, barWidth, useDefaultHoverBox]);
+    }, [displayedRunsData, metricKey, barWidth, useDefaultHoverBox, valueLabels]);
 
     const { layoutHeight, layoutWidth, setContainerDiv, containerDiv, isDynamicSizeSupported } = useDynamicPlotSize();
 
     const { formatMessage } = useIntl();
     const { theme } = useDesignSystemTheme();
     const plotlyThemedLayout = useMemo(() => createThemedPlotlyLayout(theme), [theme]);
+    const plotMargin = useMemo(() => {
+      if (!valueLabels) return margin;
+      const labelWidth = Math.max(
+        0,
+        ...Object.values(valueLabels).map((label) => label.replace(/<[^>]*>/g, '').length * 7),
+      );
+      return { ...margin, r: (margin.r ?? 0) + labelWidth + 4 };
+    }, [margin, valueLabels]);
+    const valueAnnotations = useMemo<Partial<Layout>['annotations']>(() => {
+      if (!valueLabels) return undefined;
+      // Reserve a label area outside the bars to preserve lengths and difference colors.
+      return displayedRunsData
+        .filter((run) => valueLabels[run.uuid])
+        .map((run) => ({
+          name: run.uuid,
+          text: valueLabels[run.uuid],
+          xref: 'paper',
+          x: 1,
+          xshift: 4,
+          xanchor: 'left',
+          yref: 'y',
+          y: run.uuid,
+          yanchor: 'middle',
+          showarrow: false,
+          captureevents: false,
+          font: { size: 11, color: theme.colors.textPrimary },
+          borderpad: 0,
+        }));
+    }, [displayedRunsData, valueLabels, theme.colors.textPrimary]);
 
     const [layout, setLayout] = useState<Partial<Layout>>({
       width: width || layoutWidth,
       height: height || layoutHeight,
       hovermode: 'y',
-      margin,
+      margin: plotMargin,
+      annotations: valueAnnotations,
       xaxis: {
         title: displayMetricKey ? metricKey : undefined,
         tickfont: { size: 11, color: theme.colors.textSecondary },
@@ -174,6 +239,7 @@ export const RunsMetricsBarPlot = React.memo(
           : undefined,
         tickfont: { size: 11, color: theme.colors.textSecondary },
         fixedrange: true,
+        ...orderedYAxis,
       },
       template: { layout: plotlyThemedLayout },
     });
@@ -183,18 +249,30 @@ export const RunsMetricsBarPlot = React.memo(
         ...current,
         width: width || layoutWidth,
         height: height || layoutHeight,
-        margin,
+        margin: plotMargin,
+        annotations: valueAnnotations,
         xaxis: {
           ...current.xaxis,
           title: displayMetricKey ? metricKey : undefined,
         },
+        yaxis: { ...current.yaxis, ...orderedYAxis },
       }));
-    }, [layoutWidth, layoutHeight, margin, metricKey, width, height, displayMetricKey]);
+    }, [
+      layoutWidth,
+      layoutHeight,
+      plotMargin,
+      metricKey,
+      width,
+      height,
+      displayMetricKey,
+      orderedYAxis,
+      valueAnnotations,
+    ]);
 
     const { setHoveredPointIndex } = useRenderRunsChartTraceHighlight(
       containerDiv,
       selectedRunUuid,
-      runsData,
+      displayedRunsData,
       highlightBarTraces,
     );
 
@@ -231,7 +309,7 @@ export const RunsMetricsBarPlot = React.memo(
      */
     const mutableHoverCallback = useMutableChartHoverCallback(hoverCallback);
 
-    const legendLabelData = useMemo(() => getLegendDataFromRuns(runsData), [runsData]);
+    const legendLabelData = useMemo(() => getLegendDataFromRuns(displayedRunsData), [displayedRunsData]);
 
     useEffect(() => {
       // Prepare layout and data traces to export
@@ -241,16 +319,23 @@ export const RunsMetricsBarPlot = React.memo(
           ...layout.yaxis,
           showticklabels: true,
           automargin: true,
+          ...(orderedRunIds
+            ? {
+                tickmode: 'array' as const,
+                tickvals: orderedRunIds,
+                ticktext: displayedRunsData.map(({ displayName }) => displayName),
+              }
+            : {}),
         },
       };
 
       const dataToExport = plotData.map((trace) => ({
         ...trace,
-        // In exported image, use names for Y axes
-        y: trace.names,
+        // Keep unique categories when aligned runs share a display name.
+        y: orderedRunIds ?? trace.names,
       }));
       onSetDownloadHandler?.(createChartImageDownloadHandler(dataToExport, layoutToExport));
-    }, [layout, onSetDownloadHandler, plotData]);
+    }, [layout, onSetDownloadHandler, plotData, orderedRunIds, displayedRunsData]);
 
     const chart = (
       <div
@@ -272,7 +357,11 @@ export const RunsMetricsBarPlot = React.memo(
       </div>
     );
 
-    return <RunsMetricsLegendWrapper labelData={legendLabelData}>{chart}</RunsMetricsLegendWrapper>;
+    return displayLegend ? (
+      <RunsMetricsLegendWrapper labelData={legendLabelData}>{chart}</RunsMetricsLegendWrapper>
+    ) : (
+      chart
+    );
   },
 );
 

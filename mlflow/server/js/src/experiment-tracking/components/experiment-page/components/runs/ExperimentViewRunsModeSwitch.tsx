@@ -51,6 +51,10 @@ export const ExperimentViewRunsModeSwitch = ({ hideBorder = true }: ExperimentVi
       }}
       activeKey={activeTab}
       onChange={(tabKey) => {
+        if (tabKey === 'BENCHMARKS' && singleExperimentId) {
+          navigate(Routes.getExperimentPageTabRoute(singleExperimentId, ExperimentPageTabName.Benchmarks));
+          return;
+        }
         if (tabKey === 'LINEAGE' && singleExperimentId) {
           navigate(Routes.getExperimentPageTabRoute(singleExperimentId, ExperimentPageTabName.Lineage));
           return;
@@ -86,6 +90,17 @@ export const ExperimentViewRunsModeSwitch = ({ hideBorder = true }: ExperimentVi
             <FormattedMessage
               defaultMessage="Lineage"
               description="A tab showing parent relationships between experiment runs"
+            />
+          }
+        />
+      )}
+      {singleExperimentId && (
+        <LegacyTabs.TabPane
+          key="BENCHMARKS"
+          tab={
+            <FormattedMessage
+              defaultMessage="Benchmarks"
+              description="A tab comparing benchmark results within the experiment"
             />
           }
         />

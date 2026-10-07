@@ -31,7 +31,7 @@ import {
   isRemainingRunsGroup,
   normalizeRunsGroupByKey,
 } from '../experiment-page/utils/experimentPage.group-row-utils';
-import { keyBy, values } from 'lodash';
+import { keyBy, pickBy, values } from 'lodash';
 import {
   type RunsChartsUIConfigurationSetter,
   RunsChartsUIConfigurationContextProvider,
@@ -49,6 +49,8 @@ import { RunsChartsGlobalChartSettingsDropdown } from '../runs-charts/components
 import { RunsChartsDraggableCardsGridContextProvider } from '../runs-charts/components/RunsChartsDraggableCardsGridContext';
 import { RunsChartsFilterInput } from '../runs-charts/components/RunsChartsFilterInput';
 import { RUNS_CHARTS_UI_Z_INDEX } from '../runs-charts/utils/runsCharts.const';
+import { isEvaluationMetricKey } from '../../utils/MetricsUtils';
+import { filterRunsChartsMetrics } from '../runs-charts/utils/filterRunsChartsMetrics';
 
 export interface RunsCompareProps {
   comparedRuns: RunRowType[];
@@ -81,7 +83,7 @@ const createRunDataTrace = (
   uuid: run.runUuid,
   displayName: run.runInfo?.runName || run.runUuid,
   runInfo: run.runInfo,
-  metrics: latestMetricsByRunUuid[run.runUuid] || {},
+  metrics: pickBy(latestMetricsByRunUuid[run.runUuid], (_, name) => !isEvaluationMetricKey(name)),
   params: paramsByRunUuid[run.runUuid] || {},
   tags: tagsByRunUuid[run.runUuid] || {},
   images: imagesByRunUuid[run.runUuid] || {},
@@ -115,7 +117,7 @@ const createGroupDataTrace = (run: RunRowType, color: string) => {
     uuid: run.rowUuid,
     displayName: getRunGroupDisplayName(run.groupParentInfo),
     groupParentInfo: run.groupParentInfo,
-    metrics: metricsData,
+    metrics: pickBy(metricsData, (_, name) => !isEvaluationMetricKey(name)),
     params: run.groupParentInfo?.aggregatedParamData || {},
     // TODO: add tags for groups
     tags: {},
@@ -208,7 +210,11 @@ const RunsCompareImpl = ({
   const primaryMetricKey = useMemo(() => {
     const automlEntry = experimentTags[AUTOML_EVALUATION_METRIC_TAG];
     const mlflowPrimaryEntry = experimentTags[MLFLOW_EXPERIMENT_PRIMARY_METRIC_NAME];
-    return automlEntry?.value || mlflowPrimaryEntry?.value || metricKeyList[0] || '';
+    return (
+      [automlEntry?.value, mlflowPrimaryEntry?.value, ...metricKeyList].find(
+        (name) => name && !isEvaluationMetricKey(name),
+      ) || ''
+    );
   }, [experimentTags, metricKeyList]);
 
   /**
@@ -468,6 +474,13 @@ const RunsCompareImpl = ({
 export const RunsCompare = (props: RunsCompareProps) => {
   // Updater function for the general experiment view UI state
   const updateUIState = useUpdateExperimentViewUIState();
+  const visibleChartProps = useMemo(
+    () => ({
+      ...filterRunsChartsMetrics(props, (name) => !isEvaluationMetricKey(name)),
+      metricKeyList: props.metricKeyList.filter((name) => !isEvaluationMetricKey(name)),
+    }),
+    [props],
+  );
 
   // An extracted partial updater function, responsible for setting charts UI state
   const updateChartsUIState = useCallback<(stateSetter: RunsChartsUIConfigurationSetter) => void>(
@@ -482,7 +495,7 @@ export const RunsCompare = (props: RunsCompareProps) => {
 
   return (
     <RunsChartsUIConfigurationContextProvider updateChartsUIState={updateChartsUIState}>
-      <RunsCompareImpl {...props} />
+      <RunsCompareImpl {...visibleChartProps} />
     </RunsChartsUIConfigurationContextProvider>
   );
 };

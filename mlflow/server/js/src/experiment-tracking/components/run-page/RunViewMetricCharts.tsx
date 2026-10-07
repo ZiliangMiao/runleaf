@@ -50,16 +50,31 @@ export const buildRunMonitorCharts = (
   metricKeys: string[],
 ): ExperimentRunsChartsUIConfiguration => {
   const groups = mode === 'model' ? ['train', 'val'] : ['gpu', 'cpu', 'mem'];
+  const xAxisKey = mode === 'system' ? RunsChartsLineChartXAxisType.TIME : RunsChartsLineChartXAxisType.STEP;
   const sectionId = `${mode}-monitor`;
   const section = configuration.compareRunSections?.find(({ uuid }) => uuid === sectionId);
   const compareRunCharts = groups.map((group) => {
     const uuid = `${sectionId}-${group}`;
-    const previous = configuration.compareRunCharts?.find((chart) => chart.uuid === uuid);
+    const previous = configuration.compareRunCharts?.find((chart) => chart.uuid === uuid) as
+      | RunsChartsLineCardConfig
+      | undefined;
+    const previousXAxisKey =
+      previous?.useGlobalXaxisKey ?? true
+        ? configuration.globalLineChartConfig?.xAxisKey ?? previous?.xAxisKey
+        : previous?.xAxisKey;
     const selectedMetricKeys = [...new Set(metricKeys)].filter((key) => getMonitorMetricGroup(key) === group).sort();
     return {
       ...new RunsChartsLineCardConfig(true, uuid, sectionId),
       ...previous,
-      xAxisKey: mode === 'system' ? RunsChartsLineChartXAxisType.TIME : RunsChartsLineChartXAxisType.STEP,
+      xAxisKey,
+      selectedXAxisMetricKey: '',
+      useGlobalXaxisKey: false,
+      runMonitorAxisVersion: 1,
+      // Epoch ranges cannot be reused after historical steps are corrected.
+      ...(previous?.range &&
+      (previousXAxisKey !== xAxisKey || (mode === 'model' && previous.runMonitorAxisVersion !== 1))
+        ? { range: { ...previous.range, xMin: undefined, xMax: undefined } }
+        : {}),
       type: RunsChartType.LINE,
       metricSectionId: sectionId,
       displayName: group,
@@ -84,13 +99,9 @@ export const buildRunMonitorCharts = (
     ],
     globalLineChartConfig: {
       lineSmoothness: 0,
-      selectedXAxisMetricKey: '',
       ...configuration.globalLineChartConfig,
-      xAxisKey: section
-        ? configuration.globalLineChartConfig?.xAxisKey ?? RunsChartsLineChartXAxisType.STEP
-        : mode === 'system'
-        ? RunsChartsLineChartXAxisType.TIME
-        : RunsChartsLineChartXAxisType.STEP,
+      xAxisKey,
+      selectedXAxisMetricKey: '',
     },
   };
   return isEqual(configuration, next) ? configuration : next;
@@ -215,6 +226,7 @@ const RunViewMetricChartsImpl = ({
           </ToggleButton>
         )}
         <RunsChartsGlobalChartSettingsDropdown
+          showXAxisSettings={false}
           metricKeyList={metricKeys}
           globalLineChartConfig={chartUIState.globalLineChartConfig}
           updateUIState={updateChartsUIState}
@@ -255,7 +267,15 @@ const RunViewMetricChartsImpl = ({
         </RunsChartsTooltipWrapper>
       </div>
       <RunsChartsFullScreenModal
-        fullScreenChart={fullScreenChart}
+        fullScreenChart={
+          fullScreenChart
+            ? {
+                ...fullScreenChart,
+                config:
+                  compareRunCharts?.find(({ uuid }) => uuid === fullScreenChart.config.uuid) ?? fullScreenChart.config,
+              }
+            : undefined
+        }
         onCancel={() => setFullScreenChart(undefined)}
         chartData={chartData}
         tooltipContextValue={tooltipContextValue}

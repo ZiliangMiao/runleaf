@@ -150,7 +150,7 @@ def build(package_type: PackageType) -> None:
                 "Intended Audience :: Information Technology",
                 "Topic :: Scientific/Engineering :: Artificial Intelligence",
                 "Topic :: Software Development :: Libraries :: Python Modules",
-                "License :: OSI Approved :: Apache Software License",
+                "License :: OSI Approved :: GNU Affero General Public License v3",
                 "Operating System :: OS Independent",
                 f"Programming Language :: Python :: {python_version}",
             ],
@@ -226,6 +226,7 @@ def build(package_type: PackageType) -> None:
         },
         "tool": {
             "setuptools": {
+                "license-files": ["LICENSE.txt", "LICENSE-APACHE.txt"],
                 "packages": {
                     "find": {
                         "where": ["."],
@@ -257,7 +258,7 @@ def build(package_type: PackageType) -> None:
         Path("libs/skinny/README_SKINNY.md").write_text(
             SKINNY_README.lstrip() + Path("README.md").read_text()
         )
-        for f in ["LICENSE.txt", "MANIFEST.in", "mlflow"]:
+        for f in ["LICENSE.txt", "LICENSE-APACHE.txt", "MANIFEST.in", "mlflow"]:
             symlink = Path("libs/skinny", f)
             if symlink.exists():
                 symlink.unlink()

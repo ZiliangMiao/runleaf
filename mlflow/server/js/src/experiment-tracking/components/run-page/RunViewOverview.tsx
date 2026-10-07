@@ -19,7 +19,6 @@ import { RunViewTagsBox } from './overview/RunViewTagsBox';
 import { RunViewDescriptionBox } from './overview/RunViewDescriptionBox';
 import { DetailsOverviewMetadataRow } from '../DetailsOverviewMetadataRow';
 import { RunViewRegisteredModelsBox } from './overview/RunViewRegisteredModelsBox';
-import { RunViewRegisteredPromptsBox } from './overview/RunViewRegisteredPromptsBox';
 import { RunViewLoggedModelsBox } from './overview/RunViewLoggedModelsBox';
 import { RunViewSourceBox } from './overview/RunViewSourceBox';
 import { DetailsOverviewMetadataTable } from '@mlflow/mlflow/src/experiment-tracking/components/DetailsOverviewMetadataTable';
@@ -99,20 +98,6 @@ export const RunViewOverview = ({
     (model) => model?.link,
   );
 
-  const renderPromptMetadataRow = () => {
-    return (
-      <DetailsOverviewMetadataRow
-        title={
-          <FormattedMessage
-            defaultMessage="Registered prompts"
-            description="Run page > Overview > Run prompts section label"
-          />
-        }
-        value={<RunViewRegisteredPromptsBox runUuid={runUuid} />}
-      />
-    );
-  };
-
   const renderDetails = () => {
     return (
       <DetailsOverviewMetadataTable>
@@ -171,12 +156,12 @@ export const RunViewOverview = ({
         <DetailsOverviewMetadataRow
           title={
             <FormattedMessage
-              defaultMessage="Datasets used"
+              defaultMessage="Dataset"
               description="Run page > Overview > Run datasets section label"
             />
           }
           value={
-            datasets?.length ? <RunViewDatasetBox tags={tags} runInfo={runInfo} datasets={datasets} /> : <EmptyValue />
+            datasets?.length ? <RunViewDatasetBox datasets={datasets} /> : <EmptyValue />
           }
         />
         <DetailsOverviewMetadataRow
@@ -229,7 +214,6 @@ export const RunViewOverview = ({
             )
           }
         />
-        {renderPromptMetadataRow()}
       </DetailsOverviewMetadataTable>
     );
   };

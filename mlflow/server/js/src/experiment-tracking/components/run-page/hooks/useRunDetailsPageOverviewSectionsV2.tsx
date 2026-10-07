@@ -165,11 +165,11 @@ export const useRunDetailsPageOverviewSectionsV2 = ({
     {
       id: RunDetailsPageMetadataSections.DATASETS,
       title: intl.formatMessage({
-        defaultMessage: 'Datasets',
+        defaultMessage: 'Dataset',
         description: 'Title for the datasets section on the run details page',
       }),
       content: datasets?.length ? (
-        <RunViewDatasetBoxV2 tags={tags} runInfo={runInfo} datasets={datasets} />
+        <RunViewDatasetBoxV2 datasets={datasets} />
       ) : (
         <NoneCell />
       ),

@@ -3,13 +3,13 @@ import { useEditKeyValueTagsModal } from '../../../../common/hooks/useEditKeyVal
 import { KeyValueEntity } from '../../../types';
 import { KeyValueTag } from '../../../../common/components/KeyValueTag';
 import { FormattedMessage, useIntl } from 'react-intl';
-import { keys, values } from 'lodash';
+import { values } from 'lodash';
 import { useDispatch } from 'react-redux';
 import { ThunkDispatch } from '../../../../redux-types';
 import { setRunTagsBulkApi } from '../../../actions';
-import { MLFLOW_INTERNAL_PREFIX } from '../../../../common/utils/TagUtils';
 import { useMemo } from 'react';
-import { isUserFacingTag } from '../../../../common/utils/TagUtils';
+
+const RUN_TAG_KEYS = ['run_num', 'base_run', 'change', 'model'];
 
 /**
  * Displays run tags cell in run detail overview.
@@ -27,17 +27,29 @@ export const RunViewTagsBox = ({
   const dispatch = useDispatch<ThunkDispatch>();
   const intl = useIntl();
 
-  // Get keys and tag entities while excluding system tags
-  const [visibleTagKeys, visibleTagEntities] = useMemo(
-    () => [keys(tags).filter(isUserFacingTag), values(tags).filter(({ key }) => isUserFacingTag(key))],
+  const visibleTagEntities = useMemo(
+    () => values(tags).filter(({ key }) => RUN_TAG_KEYS.includes(key)),
     [tags],
   );
 
   const { EditTagsModal, showEditTagsModal, isLoading } = useEditKeyValueTagsModal({
     valueRequired: true,
-    allAvailableTags: visibleTagKeys,
-    saveTagsHandler: async (_, existingTags, newTags) =>
-      dispatch(setRunTagsBulkApi(runUuid, existingTags, newTags)).then(onTagsUpdated),
+    allAvailableTags: RUN_TAG_KEYS,
+    saveTagsHandler: async (_, existingTags, newTags) => {
+      if (newTags.some(({ key }) => !RUN_TAG_KEYS.includes(key))) {
+        throw new Error('Run tags must be run_num, base_run, change, or model.');
+      }
+      for (const { key, value } of newTags) {
+        if (key === 'run_num' && !/^r[1-9]\d*$/.test(value)) {
+          throw new Error('run_num must use r followed by a positive number without leading zeros.');
+        }
+        if (['change', 'model'].includes(key) && !/^[a-z0-9]+(?:_[a-z0-9]+)*$/.test(value)) {
+          throw new Error(`${key} must use lowercase words or numbers separated by underscores.`);
+        }
+      }
+      await dispatch(setRunTagsBulkApi(runUuid, existingTags, newTags));
+      onTagsUpdated();
+    },
   });
 
   const showEditModal = () => {

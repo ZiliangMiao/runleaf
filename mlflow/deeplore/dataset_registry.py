@@ -5,8 +5,8 @@ first use and are NOT part of MLflow's Alembic history, so the schema revision
 MLflow verifies at startup is untouched and stock MLflow tooling keeps working
 against the database.
 
-- ``deeplore_dataset_versions``: one row per released ``(name, version)``,
-  written by step 8 of a release.
+- ``deeplore_dataset_versions``: one row per known ``(name, version)``,
+  including historical identities without a complete release snapshot.
 - ``deeplore_dataset_changelog``: historical changes, including versions that
   predate the release workflow and have no verified release snapshot.
 - ``deeplore_dataset_release_jobs``: one row per check or release started from
@@ -34,7 +34,11 @@ import sqlalchemy
 from sqlalchemy import BigInteger, Boolean, Column, Integer, String, Text
 from sqlalchemy.orm import declarative_base
 
-from mlflow.deeplore.dataset_release import build_metadata, parse_changelog, parse_version
+from mlflow.deeplore.dataset_release import (
+    build_metadata,
+    parse_changelog,
+    parse_version,
+)
 from mlflow.exceptions import MlflowException
 from mlflow.protos.databricks_pb2 import INVALID_PARAMETER_VALUE
 
@@ -50,7 +54,7 @@ JOB_ACTIVE: tuple[str, ...] = (JOB_PENDING, JOB_RUNNING)
 
 
 class SqlDatasetVersion(_Base):
-    """One released dataset version as registered by step 8 of a release.
+    """One immutable dataset version with any available release provenance.
 
     Owns the released metadata snapshot and its git coordinates. It does not
     own the dataset's files or any link to MLflow runs.
@@ -60,14 +64,14 @@ class SqlDatasetVersion(_Base):
 
     name = Column(String(256), primary_key=True)
     version = Column(String(64), primary_key=True)
-    change = Column(Text, nullable=False)
+    change = Column(Text)
     # JSON: split name -> directory hash or null.
     hashes = Column(Text, nullable=False)
     # JSON: metadata.yaml as committed under the release tag.
     metadata_json = Column(Text, nullable=False)
-    git_repo = Column(String(1024), nullable=False)
-    git_tag = Column(String(512), nullable=False)
-    git_commit = Column(String(64), nullable=False)
+    git_repo = Column(String(1024))
+    git_tag = Column(String(512))
+    git_commit = Column(String(64))
     created_at = Column(BigInteger, nullable=False)
 
     def to_dict(self) -> dict:
@@ -208,6 +212,45 @@ def list_dataset_changelogs(store: Any) -> dict[str, list[dict[str, str]]]:
 # ===== Versions =====
 
 
+def register_historical_dataset_version(
+    store: Any, name: str, version: str, test_hash: str
+) -> dict[str, Any]:
+    """Persist a verified historical identity without inventing release details.
+
+    Args:
+        store: The tracking server's SQL store.
+        name: Dataset name from historical input evidence.
+        version: Exact historical version string.
+        test_hash: Complete verified test content hash.
+
+    Returns:
+        The existing or newly registered dataset version.
+
+    Raises:
+        MlflowException: If the identity conflicts with a known version.
+    """
+    with _session(store) as session:
+        if store.engine.dialect.name == "sqlite":
+            session.execute(sqlalchemy.text("BEGIN IMMEDIATE"))
+        row = session.get(SqlDatasetVersion, (name, version))
+        if row is None:
+            row = SqlDatasetVersion(
+                name=name,
+                version=version,
+                hashes=json.dumps({"test": test_hash.lower()}),
+                metadata_json="{}",
+                created_at=_now_ms(),
+            )
+            session.add(row)
+        elif (json.loads(row.hashes).get("test") or "").lower() != test_hash.lower():
+            raise MlflowException(
+                f"dataset {name!r} {version!r} has different immutable test content",
+                error_code=INVALID_PARAMETER_VALUE,
+            )
+        session.flush()
+        return row.to_dict()
+
+
 def register_dataset_version(store: Any, record: dict) -> dict:
     """Insert or refresh one released version.
 
@@ -248,12 +291,33 @@ def register_dataset_version(store: Any, record: dict) -> dict:
     except ValueError as error:
         raise MlflowException(str(error), error_code=INVALID_PARAMETER_VALUE) from error
     with _session(store) as session:
-        row = session.get(SqlDatasetVersion, (record["name"], record["version"]))
+        if store.engine.dialect.name == "sqlite":
+            # Serialize enrichment so an established split hash cannot be replaced.
+            session.execute(sqlalchemy.text("BEGIN IMMEDIATE"))
+        row = session.get(
+            SqlDatasetVersion, (record["name"], record["version"]), with_for_update=True
+        )
         if row is None:
             row = SqlDatasetVersion(
                 name=record["name"], version=record["version"], created_at=_now_ms()
             )
             session.add(row)
+        else:
+            previous_hashes = json.loads(row.hashes)
+            incoming_hashes = record["hashes"]
+            protected_splits = (
+                previous_hashes.keys() | incoming_hashes.keys()
+                if row.git_commit is not None
+                else {split for split, digest in previous_hashes.items() if digest}
+            )
+            for split in protected_splits:
+                if (previous_hashes.get(split) or "").lower() != (
+                    incoming_hashes.get(split) or ""
+                ).lower():
+                    raise MlflowException(
+                        f"dataset {row.name!r} {row.version!r} has immutable {split} content",
+                        error_code=INVALID_PARAMETER_VALUE,
+                    )
         row.change = record["change"]
         row.hashes = json.dumps(record["hashes"])
         row.metadata_json = json.dumps(metadata)

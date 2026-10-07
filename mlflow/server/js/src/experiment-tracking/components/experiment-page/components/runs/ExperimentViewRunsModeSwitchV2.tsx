@@ -63,6 +63,14 @@ export const ExperimentViewRunsModeSwitchV2 = ({ experimentId = '', activeTab }:
             />
           </Link>
         </NavigationMenu.Item>
+        <NavigationMenu.Item key="BENCHMARKS" active={activeTab === ExperimentPageTabName.Benchmarks}>
+          <Link to={Routes.getExperimentPageTabRoute(experimentId, ExperimentPageTabName.Benchmarks)}>
+            <FormattedMessage
+              defaultMessage="Benchmarks"
+              description="A tab comparing benchmark results within the experiment"
+            />
+          </Link>
+        </NavigationMenu.Item>
         {isExperimentLoggedModelsUIEnabled() && (
           <NavigationMenu.Item key="MODELS" active={activeTab === ExperimentPageTabName.Models}>
             <Link to={Routes.getExperimentPageTabRoute(experimentId, ExperimentPageTabName.Models)}>

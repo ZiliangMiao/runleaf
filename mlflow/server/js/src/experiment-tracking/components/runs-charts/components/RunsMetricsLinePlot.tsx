@@ -18,6 +18,7 @@ import {
   normalizeChartValue,
   useDynamicPlotSize,
   getLineChartLegendData,
+  getRunMonitorMetricColor,
   lineDashStyles,
   containsDuplicateXValues,
   createFadedTraceColor,
@@ -42,6 +43,7 @@ import { type RunsChartsLineChartExpression, RunsChartsLineChartYAxisType } from
 import { useChartExpressionParser } from '../hooks/useChartExpressionParser';
 import { getExpressionChartsSortedMetricHistory } from '../utils/expressionCharts.utils';
 import { RunsChartCardLoadingPlaceholder } from './cards/ChartCard.common';
+import { getSystemMonitorMetricLabel } from '../../../utils/MetricsUtils';
 
 export type LineChartTraceData = PlotlyData & {
   x?: number[] | undefined;
@@ -52,6 +54,7 @@ export type LineChartTraceData = PlotlyData & {
 
 // Display markers only if there are less than 60 points in the single data trace
 const MARKER_DISPLAY_THRESHOLD = 60;
+const EMPTY_EXPRESSIONS: RunsChartsLineChartExpression[] = [];
 
 const getDataTraceForRun = ({
   runEntry,
@@ -65,6 +68,8 @@ const getDataTraceForRun = ({
   displayPoints,
   displayOriginalLine: originalLine,
   xAxisScaleType,
+  scaleType,
+  traceName,
   expression,
   evaluateExpression,
 }: {
@@ -79,6 +84,8 @@ const getDataTraceForRun = ({
   displayPoints?: boolean;
   displayOriginalLine?: boolean;
   xAxisScaleType?: 'linear' | 'log';
+  scaleType?: 'linear' | 'log';
+  traceName?: string;
   expression?: RunsChartsLineChartExpression;
   evaluateExpression?: (
     expression: RunsChartsLineChartExpression,
@@ -149,28 +156,43 @@ const getDataTraceForRun = ({
     return 'none';
   })();
 
+  const smoothedValues: (number | undefined)[] = EMA(yValues ?? [], originalLine ? 0 : lineSmoothness);
+  const plottedValues =
+    scaleType === 'log'
+      ? smoothedValues.map((value, index) =>
+          Number.isFinite(value) && Number(value) > 0 && Number(yValues?.[index]) > 0 ? value : undefined,
+        )
+      : smoothedValues;
+  const displayName = traceName ?? runEntry.runInfo?.runName ?? '';
+
   return {
     // Let's add UUID to each run so it can be distinguished later (e.g. on hover)
     uuid: runEntry.uuid,
-    name: runEntry.runInfo?.runName || '',
+    name: displayName,
     x: xValues,
     // The actual value is on Y axis
-    y: EMA(yValues ?? [], originalLine ? 0 : lineSmoothness),
+    y: plottedValues,
     // Save the metric history
     metricHistory: sortedMetricsHistory,
     metricKey: metricKey || expression?.expression,
-    hovertext: runEntry.runInfo?.runName || '',
+    hovertext: displayName,
     text: 'x',
     textposition: 'outside',
     textfont: {
       size: 11,
     },
     mode: containsSingleValue || shouldDisplayMarkers ? 'lines+markers' : 'lines',
-    hovertemplate: useDefaultHoverBox ? createTooltipTemplate(runEntry.runInfo?.runName || '') : undefined,
+    hovertemplate: useDefaultHoverBox ? createTooltipTemplate(displayName) : undefined,
     hoverinfo,
     hoverlabel: useDefaultHoverBox ? runsChartHoverlabel : undefined,
     type: 'scatter',
-    line: { dash: lineDash, shape: optimizedLineShape },
+    line: {
+      dash: lineDash,
+      shape: optimizedLineShape,
+      ...(traceName !== undefined
+        ? { color: originalLine ? createFadedTraceColor(runEntry.color, 0.15) : runEntry.color }
+        : {}),
+    },
     marker: {
       color: originalLine ? createFadedTraceColor(runEntry.color, 0.15) : runEntry.color,
     },
@@ -303,6 +325,21 @@ export interface RunsCompareMultipleTracesTooltipData {
 }
 
 export interface RunsMetricsLinePlotProps extends RunsPlotsCommonProps {
+  /** Enables metric colors and visibility controls for a single run monitor. */
+  isRunMonitor?: boolean;
+
+  /** Uses metric names without the run name in chart labels. */
+  hideRunName?: boolean;
+
+  /** Keeps hidden metrics in the legend without plotting their data. */
+  hiddenMetricKeys?: string[];
+
+  /** Toggles a metric's visibility in the monitor. */
+  onToggleMetric?: (metricKey: string) => void;
+
+  /** Updates visibility of every metric in the monitor in one operation. */
+  onSetAllMetricsVisible?: (visible: boolean) => void;
+
   /**
    * Determines which metric are we comparing by
    * NOTE: used only as a fallback in V2 charts
@@ -491,11 +528,16 @@ export const RunsMetricsLinePlot = React.memo(
     runsData,
     metricKey,
     selectedMetricKeys,
+    isRunMonitor = false,
+    hideRunName = false,
+    hiddenMetricKeys,
+    onToggleMetric,
+    onSetAllMetricsVisible,
     scaleType = 'linear',
     xAxisScaleType = 'linear',
     xAxisKey = RunsChartsLineChartXAxisType.STEP,
     yAxisKey = RunsChartsLineChartYAxisType.METRIC,
-    yAxisExpressions = [],
+    yAxisExpressions = EMPTY_EXPRESSIONS,
     selectedXAxisMetricKey = '',
     lineSmoothness = 70,
     className,
@@ -591,20 +633,27 @@ export const RunsMetricsLinePlot = React.memo(
           } else {
             return (
               metricKeys
+                .filter((metricKey) => !isRunMonitor || !hiddenMetricKeys?.includes(metricKey))
                 // Discard creating traces for metrics that don't have any history for a given run
                 .filter((metricKey) => !isEmpty(runEntry.metricsHistory?.[metricKey]))
                 .flatMap((metricKey, idx) => {
                   return getTraceAndOriginalTrace({
-                    runEntry,
+                    runEntry: isRunMonitor ? { ...runEntry, color: getRunMonitorMetricColor(metricKey) } : runEntry,
                     metricKey,
+                    traceName: isRunMonitor
+                      ? hideRunName
+                        ? getSystemMonitorMetricLabel(metricKey) ?? metricKey
+                        : `${runEntry.displayName} (${getSystemMonitorMetricLabel(metricKey) ?? metricKey})`
+                      : undefined,
                     xAxisKey: dynamicXAxisKey,
                     selectedXAxisMetricKey,
                     useDefaultHoverBox,
                     lineSmoothness,
                     lineShape,
-                    lineDash: lineDashStyles[idx % lineDashStyles.length],
+                    lineDash: isRunMonitor ? 'solid' : lineDashStyles[idx % lineDashStyles.length],
                     displayPoints,
                     xAxisScaleType,
+                    scaleType: isRunMonitor ? scaleType : undefined,
                   });
                 })
             );
@@ -626,9 +675,16 @@ export const RunsMetricsLinePlot = React.memo(
       yAxisExpressions,
       evaluateExpression,
       xAxisKey,
+      isRunMonitor,
+      hideRunName,
+      hiddenMetricKeys,
+      scaleType,
     ]);
 
     const bandsData = useMemo(() => {
+      if (isRunMonitor) {
+        return [];
+      }
       const metricKeys = selectedMetricKeys ?? [metricKey];
       return runsData
         .filter(({ groupParentInfo }) => groupParentInfo)
@@ -644,7 +700,16 @@ export const RunsMetricsLinePlot = React.memo(
             }),
           ),
         );
-    }, [lineShape, metricKey, runsData, selectedMetricKeys, dynamicXAxisKey, selectedXAxisMetricKey, xAxisScaleType]);
+    }, [
+      lineShape,
+      metricKey,
+      runsData,
+      selectedMetricKeys,
+      dynamicXAxisKey,
+      selectedXAxisMetricKey,
+      xAxisScaleType,
+      isRunMonitor,
+    ]);
 
     const plotDataWithBands = useMemo(() => [...bandsData, ...plotData], [plotData, bandsData]);
 
@@ -758,8 +823,24 @@ export const RunsMetricsLinePlot = React.memo(
     }
 
     const legendLabelData = useMemo(
-      () => getLineChartLegendData(runsData, selectedMetricKeys, metricKey, yAxisKey, yAxisExpressions),
-      [runsData, selectedMetricKeys, metricKey, yAxisKey, yAxisExpressions],
+      () =>
+        getLineChartLegendData(runsData, selectedMetricKeys, metricKey, yAxisKey, yAxisExpressions, {
+          isRunMonitor,
+          hideRunName,
+          hiddenMetricKeys,
+          onToggleMetric,
+        }),
+      [
+        runsData,
+        selectedMetricKeys,
+        metricKey,
+        yAxisKey,
+        yAxisExpressions,
+        isRunMonitor,
+        hideRunName,
+        hiddenMetricKeys,
+        onToggleMetric,
+      ],
     );
 
     const {
@@ -773,6 +854,8 @@ export const RunsMetricsLinePlot = React.memo(
       plotData,
       runsData,
       containsMultipleMetricKeys,
+      hideRunName,
+      isRunMonitor,
       onHover,
       onUnhover: unhoverCallback,
       xAxisKeyLabel,
@@ -793,7 +876,7 @@ export const RunsMetricsLinePlot = React.memo(
     useEffect(() => {
       // Check if we are using multiple metric keys. If so, we also need to append
       // the metric key to  the trace name in the exported image.
-      const usingMultipleMetricKeys = (selectedMetricKeys?.length || 0) > 1;
+      const usingMultipleMetricKeys = !isRunMonitor && (selectedMetricKeys?.length || 0) > 1;
       const dataToExport = usingMultipleMetricKeys
         ? plotDataWithBands.map((dataTrace) =>
             dataTrace.metricKey
@@ -813,7 +896,7 @@ export const RunsMetricsLinePlot = React.memo(
         },
       };
       onSetDownloadHandler?.(createChartImageDownloadHandler(dataToExport, layoutToExport));
-    }, [layout, onSetDownloadHandler, plotDataWithBands, selectedMetricKeys?.length]);
+    }, [layout, onSetDownloadHandler, plotDataWithBands, selectedMetricKeys?.length, isRunMonitor]);
 
     const chart = (
       <div
@@ -841,7 +924,12 @@ export const RunsMetricsLinePlot = React.memo(
     );
 
     return (
-      <RunsMetricsLegendWrapper labelData={legendLabelData} fullScreen={fullScreen}>
+      <RunsMetricsLegendWrapper
+        labelData={legendLabelData}
+        fullScreen={fullScreen}
+        isRunMonitor={isRunMonitor}
+        onSetAllMetricsVisible={onSetAllMetricsVisible}
+      >
         {chart}
       </RunsMetricsLegendWrapper>
     );

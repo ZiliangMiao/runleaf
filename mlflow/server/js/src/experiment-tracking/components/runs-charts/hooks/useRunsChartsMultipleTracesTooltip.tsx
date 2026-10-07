@@ -42,13 +42,15 @@ export const useRunsMultipleTracesTooltipData = ({
   plotData,
   legendLabelData,
   containsMultipleMetricKeys,
+  hideRunName = false,
+  isRunMonitor = false,
   xAxisKeyLabel,
   xAxisKey,
   disabled = false,
   setHoveredPointIndex,
   xAxisScaleType = 'linear',
   positionInSection = 0,
-}: Pick<RunsMetricsLinePlotProps, 'runsData' | 'onHover' | 'onUnhover'> & {
+}: Pick<RunsMetricsLinePlotProps, 'runsData' | 'onHover' | 'onUnhover' | 'hideRunName' | 'isRunMonitor'> & {
   plotData: LineChartTraceData[];
   legendLabelData: LegendLabelData[];
   containsMultipleMetricKeys?: boolean;
@@ -87,7 +89,15 @@ export const useRunsMultipleTracesTooltipData = ({
   const currentHoveredDataPoint = useRef<RunsMetricsSingleTraceTooltipData | undefined>(undefined);
 
   // Calculate all visible X values each time the plot data changes
-  const visibleXValues = useMemo(() => uniq(plotData.map(({ x }) => x).flat()) as number[], [plotData]);
+  const visibleXValues = useMemo(
+    () =>
+      uniq(
+        plotData.flatMap(({ x, y }) =>
+          isRunMonitor ? x?.filter((value, index) => Number.isFinite(value) && Number.isFinite(y?.[index])) ?? [] : x,
+        ),
+      ) as number[],
+    [plotData, isRunMonitor],
+  );
 
   // Store the reference to the initialized plotly's figure object, helps keep track when the plot is initialized
   const [initializedFigure, setInitializedFigure] = useState<{
@@ -110,6 +120,21 @@ export const useRunsMultipleTracesTooltipData = ({
   immediatePlotData.current = plotData;
   immediateXValuesData.current = visibleXValues;
   immediateFigure.current = initializedFigure;
+
+  useEffect(() => {
+    if (!isRunMonitor) {
+      return;
+    }
+    // Visibility and scale changes invalidate the last hover before the next pointer event.
+    if (immediateHoverData.current) {
+      onUnhover?.();
+    }
+    immediateHoverData.current = undefined;
+    currentHoveredDataPoint.current = undefined;
+    if (scanlineElementRef.current) {
+      scanlineElementRef.current.style.display = 'none';
+    }
+  }, [plotData, isRunMonitor, onUnhover]);
 
   // Setup the boundaries of the plot
   const setupBoundaries = useCallback((figure: Readonly<Figure>) => {
@@ -298,7 +323,7 @@ export const useRunsMultipleTracesTooltipData = ({
 
           // Keep hardware units visible even when the chart has only one metric.
           const displayName =
-            containsMultipleMetricKeys || getSystemMonitorMetricLabel(legendEntry.metricKey ?? '')
+            hideRunName || containsMultipleMetricKeys || getSystemMonitorMetricLabel(legendEntry.metricKey ?? '')
               ? legendEntry.label
               : correspondingDataEntry?.displayName;
 
@@ -308,6 +333,9 @@ export const useRunsMultipleTracesTooltipData = ({
             return undefined;
           }
           const value = correspondingDataTrace.y?.[xIndex];
+          if (isRunMonitor && !Number.isFinite(value)) {
+            return undefined;
+          }
 
           // Construct the tooltip legend entry
           return {
@@ -343,6 +371,10 @@ export const useRunsMultipleTracesTooltipData = ({
 
       const boundaries = chartBoundaries.current;
       const closestXValue = getClosestXValue(e.clientX);
+      if (isRunMonitor && (closestXValue === undefined || !immediateHoverData.current.tooltipLegendItems.length)) {
+        pointerLeavePlotCallback(e);
+        return;
+      }
       const closestXValueLeftX =
         ((xAxisScaleType === 'log' ? Math.log10(closestXValue) : closestXValue) - boundaries.lowerBoundValue) /
         boundaries.valueRange;
@@ -378,6 +410,8 @@ export const useRunsMultipleTracesTooltipData = ({
         dragLayer.removeEventListener('pointermove', hoverHandler);
         dragLayer.removeEventListener('pointerleave', pointerLeavePlotCallback);
         window.removeEventListener('resize', windowResizeHandler);
+        tooltipDataUpdateHandler.cancel();
+        windowResizeHandler.cancel();
       };
     }
 
@@ -388,6 +422,8 @@ export const useRunsMultipleTracesTooltipData = ({
     setupBoundaries,
     onHover,
     containsMultipleMetricKeys,
+    hideRunName,
+    isRunMonitor,
     currentHoveredDataPoint,
     disabled,
     xAxisKey,

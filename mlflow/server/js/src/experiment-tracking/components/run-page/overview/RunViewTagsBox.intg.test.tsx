@@ -41,15 +41,15 @@ describe('RunViewTagsBox integration', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Add tags' }));
 
-    await fastFillInput(within(screen.getByRole('dialog')).getByRole('combobox'), 'new_tag_with_value');
+    await fastFillInput(within(screen.getByRole('dialog')).getByRole('combobox'), 'model');
 
-    await userEvent.click(screen.getByText(/Add tag "new_tag_with_value"/));
-    await fastFillInput(screen.getByLabelText('Value'), 'tag_value');
+    await userEvent.click(screen.getAllByText('model', { exact: true }).pop()!);
+    await fastFillInput(screen.getByLabelText('Value'), 'vit_b_16');
     await userEvent.click(screen.getByLabelText('Add tag'));
 
     await userEvent.click(screen.getByRole('button', { name: 'Save tags' }));
 
-    expect(setRunTagsBulkApi).toBeCalledWith('test-run-uuid', [], [{ key: 'new_tag_with_value', value: 'tag_value' }]);
+    expect(setRunTagsBulkApi).toBeCalledWith('test-run-uuid', [], [{ key: 'model', value: 'vit_b_16' }]);
     expect(onTagsUpdated).toBeCalled();
   });
 
@@ -57,15 +57,17 @@ describe('RunViewTagsBox integration', () => {
     // Render the component, wait to load initial data
     await act(async () => {
       renderTestComponent([
-        { key: 'existing_tag_1', value: 'val1' },
-        { key: 'existing_tag_2', value: 'val2' },
+        { key: 'change', value: 'val1' },
+        { key: 'base_run', value: 'val2' },
         { key: 'mlflow.existing_tag_3', value: 'val2' },
+        { key: 'base_run_id', value: 'obsolete-parent-id' },
       ] as any);
     });
 
-    expect(screen.getByRole('status', { name: 'existing_tag_1' })).toBeInTheDocument();
-    expect(screen.getByRole('status', { name: 'existing_tag_2' })).toBeInTheDocument();
+    expect(screen.getByRole('status', { name: 'change' })).toBeInTheDocument();
+    expect(screen.getByRole('status', { name: 'base_run' })).toBeInTheDocument();
     expect(screen.queryByRole('status', { name: /existing_tag_3/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('status', { name: 'base_run_id' })).not.toBeInTheDocument();
 
     expect(screen.getByRole('button', { name: 'Edit tags' })).toBeInTheDocument();
 
@@ -74,13 +76,13 @@ describe('RunViewTagsBox integration', () => {
     const modalBody = screen.getByRole('dialog');
 
     await userEvent.click(
-      within(within(modalBody).getByRole('status', { name: 'existing_tag_1' })).getByRole('button'),
+      within(within(modalBody).getByRole('status', { name: 'change' })).getByRole('button'),
     );
 
-    await fastFillInput(within(screen.getByRole('dialog')).getByRole('combobox'), 'new_tag_with_value');
+    await fastFillInput(within(screen.getByRole('dialog')).getByRole('combobox'), 'model');
 
-    await userEvent.click(screen.getByText(/Add tag "new_tag_with_value"/));
-    await fastFillInput(screen.getByLabelText('Value'), 'tag_value');
+    await userEvent.click(screen.getAllByText('model', { exact: true }).pop()!);
+    await fastFillInput(screen.getByLabelText('Value'), 'vit_b_16');
     await userEvent.click(screen.getByLabelText('Add tag'));
 
     await userEvent.click(screen.getByRole('button', { name: 'Save tags' }));
@@ -88,15 +90,36 @@ describe('RunViewTagsBox integration', () => {
     expect(setRunTagsBulkApi).toBeCalledWith(
       'test-run-uuid',
       [
-        { key: 'existing_tag_1', value: 'val1' },
-        { key: 'existing_tag_2', value: 'val2' },
+        { key: 'change', value: 'val1' },
+        { key: 'base_run', value: 'val2' },
       ],
       [
-        { key: 'existing_tag_2', value: 'val2' },
-        { key: 'new_tag_with_value', value: 'tag_value' },
+        { key: 'base_run', value: 'val2' },
+        { key: 'model', value: 'vit_b_16' },
       ],
     );
     expect(onTagsUpdated).toBeCalled();
+  });
+
+  test.each([
+    ['base_run_id', 'obsolete-id', 'Run tags must be'],
+    ['run_num', 'r01', 'run_num must use'],
+    ['model', 'ViT-B-16', 'model must use'],
+  ])('rejects invalid tag %s without sending writes', async (key, value, error) => {
+    await act(async () => renderTestComponent());
+    await userEvent.click(screen.getByRole('button', { name: 'Add tags' }));
+    await fastFillInput(within(screen.getByRole('dialog')).getByRole('combobox'), key);
+    if (key === 'base_run_id') {
+      await userEvent.click(screen.getByText(/Add tag "base_run_id"/));
+    } else {
+      await userEvent.click(screen.getAllByText(key, { exact: true }).pop()!);
+    }
+    await fastFillInput(screen.getByLabelText('Value'), value);
+    await userEvent.click(screen.getByLabelText('Add tag'));
+    await userEvent.click(screen.getByRole('button', { name: 'Save tags' }));
+    expect(await screen.findByText(new RegExp(error))).toBeInTheDocument();
+    expect(setRunTagsBulkApi).not.toHaveBeenCalled();
+    expect(onTagsUpdated).not.toHaveBeenCalled();
   });
 
   test('should react accordingly when API responds with an error', async () => {
@@ -116,15 +139,15 @@ describe('RunViewTagsBox integration', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Add tags' }));
 
-    await fastFillInput(within(screen.getByRole('dialog')).getByRole('combobox'), 'new_tag_with_value');
+    await fastFillInput(within(screen.getByRole('dialog')).getByRole('combobox'), 'model');
 
-    await userEvent.click(screen.getByText(/Add tag "new_tag_with_value"/));
-    await fastFillInput(screen.getByLabelText('Value'), 'tag_value');
+    await userEvent.click(screen.getAllByText('model', { exact: true }).pop()!);
+    await fastFillInput(screen.getByLabelText('Value'), 'vit_b_16');
     await userEvent.click(screen.getByLabelText('Add tag'));
 
     await userEvent.click(screen.getByRole('button', { name: 'Save tags' }));
 
-    expect(setRunTagsBulkApi).toBeCalledWith('test-run-uuid', [], [{ key: 'new_tag_with_value', value: 'tag_value' }]);
+    expect(setRunTagsBulkApi).toBeCalledWith('test-run-uuid', [], [{ key: 'model', value: 'vit_b_16' }]);
 
     expect(screen.getByText('Some error message')).toBeInTheDocument();
   });

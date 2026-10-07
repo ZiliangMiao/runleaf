@@ -1,2 +1,3 @@
+include LICENSE.txt LICENSE-APACHE.txt
 exclude mlflow/server/js/node_modules/**/*
 exclude tests/**/*

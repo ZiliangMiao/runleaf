@@ -383,12 +383,46 @@ export const getLegendDataFromRuns = (
     }),
   );
 
+// ===== Metric colors and line chart legends =====
+
+/** Returns a stable, saturated color independent of metric order and visibility. */
+export const getRunMonitorMetricColor = (metricKey: string): string => {
+  let hash = 0;
+  for (const character of metricKey) {
+    hash = (hash * 31 + character.charCodeAt(0)) % 2147483647;
+  }
+
+  const hue = ((hash * 137508) % 360000) / 1000;
+  const saturation = 0.62 + (Math.floor(hash / 4096) % 19) / 100;
+  const lightness = 0.42 + (Math.floor(hash / 1048576) % 9) / 100;
+  const amplitude = saturation * Math.min(lightness, 1 - lightness);
+  const channels = [0, 8, 4].map((offset) => {
+    const position = (offset + hue / 30) % 12;
+    const value = lightness - amplitude * Math.max(-1, Math.min(position - 3, 9 - position, 1));
+    return Math.round(255 * value)
+      .toString(16)
+      .padStart(2, '0');
+  });
+  return `#${channels.join('')}`;
+};
+
 export const getLineChartLegendData = (
   runsData: Pick<RunsChartsRunData, 'runInfo' | 'color' | 'metricsHistory' | 'displayName' | 'uuid'>[],
   selectedMetricKeys: string[] | undefined,
   metricKey: string,
   yAxisKey: RunsChartsLineChartYAxisType,
   yAxisExpressions: RunsChartsLineChartExpression[],
+  {
+    isRunMonitor = false,
+    hideRunName = false,
+    hiddenMetricKeys = [],
+    onToggleMetric,
+  }: {
+    isRunMonitor?: boolean;
+    hideRunName?: boolean;
+    hiddenMetricKeys?: string[];
+    onToggleMetric?: (metricKey: string) => void;
+  } = {},
 ): LegendLabelData[] =>
   runsData.flatMap((runEntry): LegendLabelData[] => {
     if (!runEntry.metricsHistory) {
@@ -407,11 +441,16 @@ export const getLineChartLegendData = (
 
     const metricKeys = selectedMetricKeys ?? [metricKey];
     return metricKeys.map((metricKey, idx) => ({
-      label: `${runEntry.displayName} (${getSystemMonitorMetricLabel(metricKey) ?? metricKey})`,
-      color: runEntry.color ?? '',
-      dashStyle: lineDashStyles[idx % lineDashStyles.length],
+      label: hideRunName
+        ? getSystemMonitorMetricLabel(metricKey) ?? metricKey
+        : `${runEntry.displayName} (${getSystemMonitorMetricLabel(metricKey) ?? metricKey})`,
+      color: isRunMonitor ? getRunMonitorMetricColor(metricKey) : runEntry.color ?? '',
+      dashStyle: isRunMonitor ? 'solid' : lineDashStyles[idx % lineDashStyles.length],
       metricKey,
       uuid: runEntry.uuid,
+      ...(isRunMonitor && onToggleMetric
+        ? { checked: !hiddenMetricKeys.includes(metricKey), onToggle: () => onToggleMetric(metricKey) }
+        : {}),
     }));
   });
 

@@ -12,8 +12,10 @@ const VisibleIcon = () => <Icon component={VisibleFillIcon} />;
 const RowActionsHeaderCellRendererV2 = React.memo(
   ({
     onToggleVisibility,
+    children,
   }: {
     onToggleVisibility: (mode: RUNS_VISIBILITY_MODE | string, runOrGroupUuid?: string) => void;
+    children?: React.ReactNode;
   }) => {
     const { theme } = useDesignSystemTheme();
     const intl = useIntl();
@@ -74,6 +76,7 @@ const RowActionsHeaderCellRendererV2 = React.memo(
               />
             </DropdownMenu.RadioItem>
           </DropdownMenu.RadioGroup>
+          {children}
         </DropdownMenu.Content>
       </DropdownMenu.Root>
     );
@@ -89,6 +92,7 @@ export const RowActionsHeaderCellRenderer = React.memo(
     usingCustomVisibility?: boolean;
     onToggleVisibility: (runUuidOrToggle: string) => void;
     eGridHeader?: HTMLElement;
+    children?: React.ReactNode;
   }) => {
     const intl = useIntl();
 

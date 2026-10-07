@@ -72,6 +72,7 @@ export interface ChartCardWrapperProps extends RunsChartCardReorderProps, RunsCh
   dragGroupKey: RunsChartsChartsDragGroup;
   additionalMenuContent?: React.ReactNode;
   toggleFullScreenChart?: () => void;
+  headerActions?: React.ReactNode;
   toggles?: ChartCardToggleProps[];
   isRefreshing?: boolean;
   onClickDownload?: (format: ExperimentChartImageDownloadFileFormat | 'csv' | 'csv-full') => void;
@@ -99,6 +100,7 @@ const RunsChartCardWrapperRaw = ({
   nextChartUuid,
   additionalMenuContent,
   toggleFullScreenChart,
+  headerActions,
   toggles,
   supportedDownloadFormats = [],
   onClickDownload,
@@ -143,14 +145,16 @@ const RunsChartCardWrapperRaw = ({
         css={{
           display: 'flex',
           overflow: 'hidden',
+          alignItems: headerActions ? 'center' : undefined,
         }}
       >
         <div
           data-testid="experiment-view-compare-runs-card-drag-handle"
           css={{
-            marginTop: usingCustomTitle ? theme.spacing.sm : theme.spacing.xs,
+            marginTop: headerActions ? 0 : usingCustomTitle ? theme.spacing.sm : theme.spacing.xs,
             marginRight: theme.spacing.sm,
             cursor: 'grab',
+            display: headerActions ? 'flex' : undefined,
           }}
           className={DRAGGABLE_CARD_HANDLE_CLASS}
         >
@@ -163,6 +167,7 @@ const RunsChartCardWrapperRaw = ({
             <Typography.Title
               title={String(title)}
               level={4}
+              withoutMargins={Boolean(headerActions)}
               css={{
                 marginBottom: 0,
                 overflow: 'hidden',
@@ -187,6 +192,11 @@ const RunsChartCardWrapperRaw = ({
             }}
           >
             <Spinner />
+          </div>
+        )}
+        {headerActions && (
+          <div css={{ display: 'flex', alignItems: 'center', flexShrink: 0, marginRight: theme.spacing.xs }}>
+            {headerActions}
           </div>
         )}
         {toggles && (

@@ -23,12 +23,12 @@ export interface DatasetMetadata {
 export interface DatasetVersion {
   name: string;
   version: string;
-  change: string;
+  change: string | null;
   hashes: DatasetHashes;
   metadata: DatasetMetadata;
-  git_repo: string;
-  git_tag: string;
-  git_commit: string;
+  git_repo: string | null;
+  git_tag: string | null;
+  git_commit: string | null;
   created_at: number;
 }
 
