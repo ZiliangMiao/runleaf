@@ -1,6 +1,10 @@
-import { TableSkeleton, ToggleButton, useDesignSystemTheme } from '@databricks/design-system';
-import { compact, mapValues, values } from 'lodash';
-import { ReactNode, useEffect, useMemo, useState } from 'react';
+/**
+ * Run monitors: chart configuration, chart display, and persisted state.
+ * Naming table: build* constructs grouped charts; RunView* renders monitor views.
+ */
+import { ToggleButton, useDesignSystemTheme } from '@databricks/design-system';
+import { compact, isEqual, mapValues, noop, pickBy, values } from 'lodash';
+import { ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 import { useIntl } from 'react-intl';
 import { useSelector } from 'react-redux';
 import { ReduxState } from '../../../redux-types';
@@ -8,34 +12,21 @@ import type { KeyValueEntity, MetricEntitiesByName, RunInfoEntity } from '../../
 
 import { RunsChartsTooltipWrapper } from '../runs-charts/hooks/useRunsChartsTooltip';
 import { RunViewChartTooltipBody } from './RunViewChartTooltipBody';
-import { RunsChartType, RunsChartsCardConfig } from '../runs-charts/runs-charts.types';
+import { RunsChartType, RunsChartsCardConfig, RunsChartsLineCardConfig } from '../runs-charts/runs-charts.types';
 import type { RunsChartsRunData } from '../runs-charts/components/RunsCharts.common';
 import { RunsChartsLineChartXAxisType } from '../runs-charts/components/RunsCharts.common';
 import type { ExperimentRunsChartsUIConfiguration } from '../experiment-page/models/ExperimentPageUIState';
-import { RunsChartsSectionAccordion } from '../runs-charts/components/sections/RunsChartsSectionAccordion';
-import { RunsChartsConfigureModal } from '../runs-charts/components/RunsChartsConfigureModal';
-import {
-  RunsChartsUIConfigurationContextProvider,
-  useConfirmChartCardConfigurationFn,
-  useInsertRunsChartsFn,
-  useRemoveRunsChartFn,
-  useReorderRunsChartsFn,
-} from '../runs-charts/hooks/useRunsChartsUIConfiguration';
-import {
-  LOG_IMAGE_TAG_INDICATOR,
-  MLFLOW_MODEL_METRIC_NAME,
-  MLFLOW_SYSTEM_METRIC_NAME,
-  MLFLOW_SYSTEM_METRIC_PREFIX,
-} from '../../constants';
+import { RunsChartsLineChartCard } from '../runs-charts/components/cards/RunsChartsLineChartCard';
+import { RunsChartsUIConfigurationContextProvider } from '../runs-charts/hooks/useRunsChartsUIConfiguration';
 import LocalStorageUtils from '../../../common/utils/LocalStorageUtils';
 import { RunsChartsFullScreenModal } from '../runs-charts/components/RunsChartsFullScreenModal';
 import { useIsTabActive } from '../../../common/hooks/useIsTabActive';
 import { shouldEnableRunDetailsPageAutoRefresh } from '../../../common/utils/FeatureUtils';
-import { usePopulateImagesByRunUuid } from '../experiment-page/hooks/usePopulateImagesByRunUuid';
 import type { UseGetRunQueryResponseRunInfo } from './hooks/useGetRunQuery';
 import { RunsChartsGlobalChartSettingsDropdown } from '../runs-charts/components/RunsChartsGlobalChartSettingsDropdown';
-import { RunsChartsDraggableCardsGridContextProvider } from '../runs-charts/components/RunsChartsDraggableCardsGridContext';
 import { RunsChartsFilterInput } from '../runs-charts/components/RunsChartsFilterInput';
+import { getMonitorMetricGroup, isRunMonitorMetricKey } from '../../utils/MetricsUtils';
+import { filterRunsChartsMetrics } from '../runs-charts/utils/filterRunsChartsMetrics';
 
 interface RunViewMetricChartsProps {
   metricKeys: string[];
@@ -49,6 +40,63 @@ interface RunViewMetricChartsProps {
   tags?: Record<string, KeyValueEntity>;
   params?: Record<string, KeyValueEntity>;
 }
+
+// ===== Monitor chart configuration =====
+
+/** Builds the monitor's grouped history charts and replaces legacy per-metric layouts. */
+export const buildRunMonitorCharts = (
+  configuration: ExperimentRunsChartsUIConfiguration,
+  mode: 'model' | 'system',
+  metricKeys: string[],
+): ExperimentRunsChartsUIConfiguration => {
+  const groups = mode === 'model' ? ['train', 'val'] : ['gpu', 'cpu', 'mem'];
+  const sectionId = `${mode}-monitor`;
+  const section = configuration.compareRunSections?.find(({ uuid }) => uuid === sectionId);
+  const compareRunCharts = groups.map((group) => {
+    const uuid = `${sectionId}-${group}`;
+    const previous = configuration.compareRunCharts?.find((chart) => chart.uuid === uuid);
+    const selectedMetricKeys = [...new Set(metricKeys)].filter((key) => getMonitorMetricGroup(key) === group).sort();
+    return {
+      ...new RunsChartsLineCardConfig(true, uuid, sectionId),
+      ...previous,
+      xAxisKey: mode === 'system' ? RunsChartsLineChartXAxisType.TIME : RunsChartsLineChartXAxisType.STEP,
+      type: RunsChartType.LINE,
+      metricSectionId: sectionId,
+      displayName: group,
+      deleted: false,
+      metricKey: selectedMetricKeys[0] ?? '',
+      selectedMetricKeys,
+    };
+  });
+  const next = {
+    ...configuration,
+    compareRunCharts,
+    compareRunSections: [
+      {
+        ...section,
+        uuid: sectionId,
+        name: mode === 'model' ? 'Model Monitor' : 'System Monitor',
+        display: section?.display ?? true,
+        isReordered: false,
+        deleted: false,
+        isGenerated: true,
+      },
+    ],
+    globalLineChartConfig: {
+      lineSmoothness: 0,
+      selectedXAxisMetricKey: '',
+      ...configuration.globalLineChartConfig,
+      xAxisKey: section
+        ? configuration.globalLineChartConfig?.xAxisKey ?? RunsChartsLineChartXAxisType.STEP
+        : mode === 'system'
+        ? RunsChartsLineChartXAxisType.TIME
+        : RunsChartsLineChartXAxisType.STEP,
+    },
+  };
+  return isEqual(configuration, next) ? configuration : next;
+};
+
+// ===== Monitor chart display =====
 
 /**
  * Component displaying metric charts for a single run
@@ -69,15 +117,24 @@ const RunViewMetricChartsImpl = ({
   ) => void;
 }) => {
   const { theme } = useDesignSystemTheme();
-  const [search, setSearch] = useState('');
   const { formatMessage } = useIntl();
 
-  const { compareRunCharts, compareRunSections, chartsSearchFilter } = chartUIState;
+  const { compareRunCharts, chartsSearchFilter } = chartUIState;
 
-  // For the draggable grid layout, we filter visible cards on this level
   const visibleChartCards = useMemo(() => {
-    return compareRunCharts?.filter((chart) => !chart.deleted) ?? [];
-  }, [compareRunCharts]);
+    const charts = (compareRunCharts ?? []) as RunsChartsLineCardConfig[];
+    if (!chartsSearchFilter) {
+      return charts;
+    }
+    try {
+      const pattern = new RegExp(chartsSearchFilter, 'i');
+      return charts.filter((chart) =>
+        [chart.displayName ?? '', ...(chart.selectedMetricKeys ?? [])].some((key) => pattern.test(key)),
+      );
+    } catch {
+      return charts;
+    }
+  }, [compareRunCharts, chartsSearchFilter]);
 
   const [fullScreenChart, setFullScreenChart] = useState<
     | {
@@ -100,32 +157,6 @@ const RunViewMetricChartsImpl = ({
 
   const tooltipContextValue = useMemo(() => ({ runInfo, metricsForRun }), [runInfo, metricsForRun]);
 
-  const { imagesByRunUuid } = useSelector((state: ReduxState) => ({
-    imagesByRunUuid: state.entities.imagesByRunUuid,
-  }));
-
-  const [configuredCardConfig, setConfiguredCardConfig] = useState<RunsChartsCardConfig | null>(null);
-
-  const reorderCharts = useReorderRunsChartsFn();
-
-  const addNewChartCard = (metricSectionId: string) => (type: RunsChartType) =>
-    setConfiguredCardConfig(RunsChartsCardConfig.getEmptyChartCardByType(type, false, undefined, metricSectionId));
-
-  const insertCharts = useInsertRunsChartsFn();
-
-  const startEditChart = (chartCard: RunsChartsCardConfig) => setConfiguredCardConfig(chartCard);
-
-  const removeChart = useRemoveRunsChartFn();
-
-  const confirmChartCardConfiguration = useConfirmChartCardConfigurationFn();
-
-  const submitForm = (configuredCard: Partial<RunsChartsCardConfig>) => {
-    confirmChartCardConfiguration(configuredCard);
-
-    // Hide the modal
-    setConfiguredCardConfig(null);
-  };
-
   // Create a single run data object to be used in charts
   const chartData: RunsChartsRunData[] = useMemo(
     () => [
@@ -134,79 +165,22 @@ const RunViewMetricChartsImpl = ({
         metrics: latestMetrics,
         params,
         tags,
-        images: imagesByRunUuid[runInfo.runUuid ?? ''] || {},
+        images: {},
         metricHistory: {},
         uuid: runInfo.runUuid ?? '',
         color: theme.colors.primary,
         runInfo,
       },
     ],
-    [runInfo, latestMetrics, params, tags, imagesByRunUuid, theme],
+    [runInfo, latestMetrics, params, tags, theme],
   );
 
   useEffect(() => {
-    if ((!compareRunSections || !compareRunCharts) && chartData.length > 0) {
-      const { resultChartSet, resultSectionSet } = RunsChartsCardConfig.getBaseChartAndSectionConfigs({
-        runsData: chartData,
-        enabledSectionNames: [mode === 'model' ? MLFLOW_MODEL_METRIC_NAME : MLFLOW_SYSTEM_METRIC_NAME],
-        // Filter only model or system metrics
-        filterMetricNames: (name) => {
-          const isSystemMetric = name.startsWith(MLFLOW_SYSTEM_METRIC_PREFIX);
-          return mode === 'model' ? !isSystemMetric : isSystemMetric;
-        },
-      });
-
-      updateChartsUIState((current) => ({
-        ...current,
-        compareRunCharts: resultChartSet,
-        compareRunSections: resultSectionSet,
-      }));
-    }
-  }, [compareRunCharts, compareRunSections, chartData, mode, updateChartsUIState]);
-
-  /**
-   * Update charts with the latest metrics if new are found
-   */
-  useEffect(() => {
-    updateChartsUIState((current) => {
-      if (!current.compareRunCharts || !current.compareRunSections) {
-        return current;
-      }
-      const { resultChartSet, resultSectionSet, isResultUpdated } = RunsChartsCardConfig.updateChartAndSectionConfigs({
-        compareRunCharts: current.compareRunCharts,
-        compareRunSections: current.compareRunSections,
-        runsData: chartData,
-        isAccordionReordered: current.isAccordionReordered,
-        // Filter only model or system metrics
-        filterMetricNames: (name) => {
-          const isSystemMetric = name.startsWith(MLFLOW_SYSTEM_METRIC_PREFIX);
-          return mode === 'model' ? !isSystemMetric : isSystemMetric;
-        },
-      });
-
-      if (!isResultUpdated) {
-        return current;
-      }
-      return {
-        ...current,
-        compareRunCharts: resultChartSet,
-        compareRunSections: resultSectionSet,
-      };
-    });
-  }, [chartData, updateChartsUIState, mode]);
+    updateChartsUIState((current) => buildRunMonitorCharts(current, mode, metricKeys));
+  }, [metricKeys, updateChartsUIState, mode]);
 
   const isTabActive = useIsTabActive();
   const autoRefreshEnabled = chartUIState.autoRefreshEnabled && shouldEnableRunDetailsPageAutoRefresh() && isTabActive;
-
-  // Determine if run contains images logged by `mlflow.log_image()`
-  const containsLoggedImages = Boolean(tags[LOG_IMAGE_TAG_INDICATOR]);
-
-  usePopulateImagesByRunUuid({
-    runUuids: [runInfo.runUuid ?? ''],
-    runUuidsIsActive: [runInfo.status === 'RUNNING'],
-    autoRefreshEnabled,
-    enabled: containsLoggedImages,
-  });
 
   return (
     <div
@@ -253,39 +227,33 @@ const RunViewMetricChartsImpl = ({
         }}
       >
         <RunsChartsTooltipWrapper contextData={tooltipContextValue} component={RunViewChartTooltipBody}>
-          <RunsChartsDraggableCardsGridContextProvider visibleChartCards={visibleChartCards}>
-            <RunsChartsSectionAccordion
-              compareRunSections={compareRunSections}
-              compareRunCharts={visibleChartCards}
-              reorderCharts={reorderCharts}
-              insertCharts={insertCharts}
-              chartData={chartData}
-              startEditChart={startEditChart}
-              removeChart={removeChart}
-              addNewChartCard={addNewChartCard}
-              search={chartsSearchFilter ?? ''}
-              supportedChartTypes={[RunsChartType.LINE, RunsChartType.BAR, RunsChartType.IMAGE]}
-              setFullScreenChart={setFullScreenChart}
-              autoRefreshEnabled={autoRefreshEnabled}
-              globalLineChartConfig={chartUIState.globalLineChartConfig}
-              groupBy={null}
-            />
-          </RunsChartsDraggableCardsGridContextProvider>
+          <div
+            css={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 480px), 1fr))',
+              gap: theme.spacing.md,
+            }}
+          >
+            {visibleChartCards.map((config, index) => (
+              <RunsChartsLineChartCard
+                key={config.uuid}
+                config={config}
+                chartRunData={chartData}
+                groupBy={null}
+                onReorderWith={noop}
+                canMoveUp={false}
+                canMoveDown={false}
+                positionInSection={index}
+                isInViewport
+                isInViewportDeferred
+                setFullScreenChart={setFullScreenChart}
+                autoRefreshEnabled={autoRefreshEnabled}
+                globalLineChartConfig={chartUIState.globalLineChartConfig}
+              />
+            ))}
+          </div>
         </RunsChartsTooltipWrapper>
       </div>
-      {configuredCardConfig && (
-        <RunsChartsConfigureModal
-          chartRunData={chartData}
-          metricKeyList={metricKeys}
-          paramKeyList={[]}
-          config={configuredCardConfig}
-          onSubmit={submitForm}
-          onCancel={() => setConfiguredCardConfig(null)}
-          groupBy={null}
-          supportedChartTypes={[RunsChartType.LINE, RunsChartType.BAR, RunsChartType.IMAGE]}
-          globalLineChartConfig={chartUIState.globalLineChartConfig}
-        />
-      )}
       <RunsChartsFullScreenModal
         fullScreenChart={fullScreenChart}
         onCancel={() => setFullScreenChart(undefined)}
@@ -293,14 +261,17 @@ const RunViewMetricChartsImpl = ({
         tooltipContextValue={tooltipContextValue}
         tooltipComponent={RunViewChartTooltipBody}
         autoRefreshEnabled={autoRefreshEnabled}
+        globalLineChartConfig={chartUIState.globalLineChartConfig}
         groupBy={null}
       />
     </div>
   );
 };
 
+// ===== Monitor state and entry point =====
+
 export const RunViewMetricCharts = (props: RunViewMetricChartsProps) => {
-  const persistenceIdentifier = `${props.runInfo.runUuid}-${props.mode}`;
+  const persistenceIdentifier = `${props.runInfo.runUuid}-${props.mode}-monitor`;
 
   const localStore = useMemo(
     () => LocalStorageUtils.getStoreForComponent('RunPage', persistenceIdentifier),
@@ -315,7 +286,7 @@ export const RunViewMetricCharts = (props: RunViewMetricChartsProps) => {
       // Auto-refresh is enabled by default only if the flag is set
       autoRefreshEnabled: shouldEnableRunDetailsPageAutoRefresh(),
       globalLineChartConfig: {
-        xAxisKey: RunsChartsLineChartXAxisType.STEP,
+        xAxisKey: props.mode === 'system' ? RunsChartsLineChartXAxisType.TIME : RunsChartsLineChartXAxisType.STEP,
         lineSmoothness: 0,
         selectedXAxisMetricKey: '',
       },
@@ -336,29 +307,34 @@ export const RunViewMetricCharts = (props: RunViewMetricChartsProps) => {
     localStore.setItem('chartUIState', JSON.stringify(chartUIState));
   }, [chartUIState, localStore]);
 
+  const includeMetric = useCallback(
+    (name: string) => {
+      const group = getMonitorMetricGroup(name);
+      return props.mode === 'system'
+        ? (group === 'gpu' || group === 'cpu' || group === 'mem') && isRunMonitorMetricKey(name, props.params)
+        : group === 'train' || group === 'val';
+    },
+    [props.mode, props.params],
+  );
+  const visibleMetricKeys = useMemo(() => props.metricKeys.filter(includeMetric), [props.metricKeys, includeMetric]);
+  const visibleMetrics = useMemo(
+    () => pickBy(props.latestMetrics, (_, name) => includeMetric(name)),
+    [props.latestMetrics, includeMetric],
+  );
+  const visibleChartUIState = useMemo(
+    () => buildRunMonitorCharts(filterRunsChartsMetrics(chartUIState, includeMetric), props.mode, visibleMetricKeys),
+    [chartUIState, includeMetric, props.mode, visibleMetricKeys],
+  );
+
   return (
     <RunsChartsUIConfigurationContextProvider updateChartsUIState={updateChartsUIState}>
-      <RunViewMetricChartsImpl {...props} chartUIState={chartUIState} updateChartsUIState={updateChartsUIState} />
+      <RunViewMetricChartsImpl
+        {...props}
+        metricKeys={visibleMetricKeys}
+        latestMetrics={visibleMetrics}
+        chartUIState={visibleChartUIState}
+        updateChartsUIState={updateChartsUIState}
+      />
     </RunsChartsUIConfigurationContextProvider>
-  );
-};
-
-const RunViewMetricChartsSkeleton = ({ className }: { className?: string }) => {
-  const { theme } = useDesignSystemTheme();
-  return (
-    <div
-      css={{
-        flex: 1,
-        display: 'grid',
-        gridTemplateColumns: '1fr 1fr 1fr',
-        gridTemplateRows: '200px',
-        gap: theme.spacing.md,
-      }}
-      className={className}
-    >
-      {new Array(6).fill(null).map((_, index) => (
-        <TableSkeleton key={index} lines={5} seed={index.toString()} />
-      ))}
-    </div>
   );
 };

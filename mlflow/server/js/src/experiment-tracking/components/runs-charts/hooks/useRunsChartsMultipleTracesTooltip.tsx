@@ -9,6 +9,7 @@ import type {
 import { compact, isNumber, isString, isUndefined, orderBy, throttle, uniq } from 'lodash';
 import type { LegendLabelData } from '../components/RunsMetricsLegend';
 import { RunsChartsLineChartXAxisType } from '../components/RunsCharts.common';
+import { getSystemMonitorMetricLabel } from '../../../utils/MetricsUtils';
 
 // Plotly-specific selectors for finding particular elements of interest in the plot DOM structure
 const PLOTLY_SVG_SELECTOR = '.main-svg';
@@ -295,9 +296,11 @@ export const useRunsMultipleTracesTooltipData = ({
             return undefined;
           }
 
-          // Determine the display name of the metric - if there are multiple metrics, use the legend label,
-          // otherwise use the display name of the corresponding data entry.
-          const displayName = containsMultipleMetricKeys ? legendEntry.label : correspondingDataEntry?.displayName;
+          // Keep hardware units visible even when the chart has only one metric.
+          const displayName =
+            containsMultipleMetricKeys || getSystemMonitorMetricLabel(legendEntry.metricKey ?? '')
+              ? legendEntry.label
+              : correspondingDataEntry?.displayName;
 
           // Find the value of the corresponding data trace at the closest X value
           const xIndex = correspondingDataTrace.x?.indexOf(closestXValue);

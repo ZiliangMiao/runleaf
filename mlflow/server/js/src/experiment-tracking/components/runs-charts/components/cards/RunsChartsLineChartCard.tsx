@@ -39,6 +39,9 @@ import { RunsChartsGlobalLineChartConfig } from '../../../experiment-page/models
 import { useLineChartGlobalConfig } from '../hooks/useLineChartGlobalConfig';
 
 const getV2ChartTitle = (cardConfig: RunsChartsLineCardConfig): string => {
+  if (cardConfig.displayName) {
+    return cardConfig.displayName;
+  }
   if (shouldEnableChartExpressions() && cardConfig.yAxisKey === RunsChartsLineChartYAxisType.EXPRESSION) {
     const expressions = cardConfig.yAxisExpressions?.map((exp) => exp.expression) || [];
     return expressions?.join(' vs ') || '';
@@ -59,8 +62,8 @@ export interface RunsChartsLineChartCardProps
 
   groupBy: RunsGroupByConfig | null;
 
-  onDelete: () => void;
-  onEdit: () => void;
+  onDelete?: () => void;
+  onEdit?: () => void;
 
   fullScreen?: boolean;
 

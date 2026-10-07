@@ -55,8 +55,8 @@ export const RunViewModeSwitch = () => {
       <LegacyTabs.TabPane
         tab={
           <FormattedMessage
-            defaultMessage="Model metrics"
-            description="Run details page > tab selector > Model metrics tab"
+            defaultMessage="Model Monitor"
+            description="Run details page > tab selector > model training monitor tab"
           />
         }
         key={RunPageTabName.MODEL_METRIC_CHARTS}
@@ -64,8 +64,8 @@ export const RunViewModeSwitch = () => {
       <LegacyTabs.TabPane
         tab={
           <FormattedMessage
-            defaultMessage="System metrics"
-            description="Run details page > tab selector > Model metrics tab"
+            defaultMessage="System Monitor"
+            description="Run details page > tab selector > training hardware monitor tab"
           />
         }
         key={RunPageTabName.SYSTEM_METRIC_CHARTS}

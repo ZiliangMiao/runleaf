@@ -32,6 +32,7 @@ import {
   RunsChartsParallelCardConfig,
 } from '../runs-charts.types';
 import { isParallelChartConfigured, processParallelCoordinateData } from '../utils/parallelCoordinatesPlot.utils';
+import { getSystemMonitorMetricLabel } from '../../../utils/MetricsUtils';
 
 /**
  * Common props for all charts used in experiment runs
@@ -406,7 +407,7 @@ export const getLineChartLegendData = (
 
     const metricKeys = selectedMetricKeys ?? [metricKey];
     return metricKeys.map((metricKey, idx) => ({
-      label: `${runEntry.displayName} (${metricKey})`,
+      label: `${runEntry.displayName} (${getSystemMonitorMetricLabel(metricKey) ?? metricKey})`,
       color: runEntry.color ?? '',
       dashStyle: lineDashStyles[idx % lineDashStyles.length],
       metricKey,

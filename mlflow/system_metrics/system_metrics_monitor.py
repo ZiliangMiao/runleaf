@@ -1,4 +1,9 @@
-"""Class for monitoring system stats."""
+"""Collect and publish a run's training system metrics.
+
+Sections: system monitoring lifecycle.
+Naming: collect_* samples metrics; aggregate_* averages samples;
+publish_* sends the resulting values to the tracking service.
+"""
 
 import logging
 import threading
@@ -12,12 +17,13 @@ from mlflow.environment_variables import (
 from mlflow.exceptions import MlflowException
 from mlflow.system_metrics.metrics.base_metrics_monitor import BaseMetricsMonitor
 from mlflow.system_metrics.metrics.cpu_monitor import CPUMonitor
-from mlflow.system_metrics.metrics.disk_monitor import DiskMonitor
 from mlflow.system_metrics.metrics.gpu_monitor import GPUMonitor
-from mlflow.system_metrics.metrics.network_monitor import NetworkMonitor
-from mlflow.system_metrics.metrics.rocm_monitor import ROCMMonitor
+from mlflow.system_metrics.metrics.rocm_monitor import is_rocml_available
 
 _logger = logging.getLogger(__name__)
+
+
+# ===== System monitoring lifecycle =====
 
 
 class SystemMetricsMonitor:
@@ -31,7 +37,9 @@ class SystemMetricsMonitor:
     environment variables, e.g., run `export MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL=10` in terminal
     will set the sampling interval to 10 seconds.
 
-    System metrics are logged with a prefix "system/", e.g., "system/cpu_utilization_percentage".
+    System metrics are logged with a prefix "system/", e.g., "system/cpu_util".
+    CPU and memory utilization are percentages. GPU utilization is a percentage,
+    GPU memory is measured in mebibytes, and GPU power is measured in watts.
 
     Args:
         run_id: string, the MLflow run ID.
@@ -48,21 +56,23 @@ class SystemMetricsMonitor:
             collected. Will be overridden by `MLFLOW_SYSTEM_METRICS_NODE_ID`
             evnironment variable. This is useful in multi-node training to distinguish the metrics
             from different nodes. For example, if you set node_id to "node_0", the system metrics
-            getting logged will be of format "system/node_0/cpu_utilization_percentage".
+            getting logged will be of format "system/node_0/cpu_util".
     """
+
+    # ---- Initialization ----
 
     def __init__(
         self,
-        run_id,
-        sampling_interval=10,
-        samples_before_logging=1,
-        resume_logging=False,
-        node_id=None,
-    ):
+        run_id: str,
+        sampling_interval: float = 10,
+        samples_before_logging: int = 1,
+        resume_logging: bool = False,
+        node_id: Optional[str] = None,
+    ) -> None:
         from mlflow.utils.autologging_utils import BatchMetricsLogger
 
         # Instantiate default monitors.
-        self.monitors = [CPUMonitor(), DiskMonitor(), NetworkMonitor()]
+        self.monitors = [CPUMonitor()]
 
         if gpu_monitor := self._initialize_gpu_monitor():
             self.monitors.append(gpu_monitor)
@@ -80,7 +90,7 @@ class SystemMetricsMonitor:
         self.node_id = MLFLOW_SYSTEM_METRICS_NODE_ID.get() or node_id
         self._logging_step = self._get_next_logging_step(run_id) if resume_logging else 0
 
-    def _get_next_logging_step(self, run_id):
+    def _get_next_logging_step(self, run_id: str) -> int:
         from mlflow.tracking.client import MlflowClient
 
         client = MlflowClient()
@@ -98,7 +108,9 @@ class SystemMetricsMonitor:
         metric_history = client.get_metric_history(run_id, system_metric_name)
         return metric_history[-1].step + 1
 
-    def start(self):
+    # ---- Monitoring lifecycle ----
+
+    def start(self) -> None:
         """Start monitoring system metrics."""
         try:
             self._process = threading.Thread(
@@ -112,7 +124,7 @@ class SystemMetricsMonitor:
             _logger.warning(f"Failed to start monitoring system metrics: {e}")
             self._process = None
 
-    def monitor(self):
+    def monitor(self) -> None:
         """Main monitoring loop, which consistently collect and log system metrics."""
         from mlflow.tracking.fluent import get_run
 
@@ -140,7 +152,9 @@ class SystemMetricsMonitor:
                 )
                 return
 
-    def collect_metrics(self):
+    # ---- Sampling and publication ----
+
+    def collect_metrics(self) -> dict[str, list[float]]:
         """Collect system metrics."""
         metrics = {}
         for monitor in self.monitors:
@@ -148,14 +162,14 @@ class SystemMetricsMonitor:
             metrics.update(monitor._metrics)
         return metrics
 
-    def aggregate_metrics(self):
+    def aggregate_metrics(self) -> dict[str, float]:
         """Aggregate collected metrics."""
         metrics = {}
         for monitor in self.monitors:
             metrics.update(monitor.aggregate_metrics())
         return metrics
 
-    def publish_metrics(self, metrics):
+    def publish_metrics(self, metrics: dict[str, float]) -> None:
         """Log collected metrics to MLflow."""
         # Add prefix "system/" to the metrics name for grouping. If `self.node_id` is not None, also
         # add it to the metrics name.
@@ -167,7 +181,9 @@ class SystemMetricsMonitor:
         for monitor in self.monitors:
             monitor.clear_metrics()
 
-    def finish(self):
+    # ---- Shutdown ----
+
+    def finish(self) -> None:
         """Stop monitoring system metrics."""
         if self._process is None:
             return
@@ -181,6 +197,8 @@ class SystemMetricsMonitor:
             _logger.error(f"Error terminating system metrics monitoring process: {e}.")
         self._process = None
 
+    # ---- Device initialization ----
+
     def _initialize_gpu_monitor(self) -> Optional[BaseMetricsMonitor]:
         # NVIDIA GPU
         try:
@@ -188,11 +206,11 @@ class SystemMetricsMonitor:
         except Exception:
             _logger.debug("Failed to initialize GPU monitor for NVIDIA GPU.", exc_info=True)
 
-        # Falling back to pyrocml (AMD/HIP GPU)
-        try:
-            return ROCMMonitor()
-        except Exception:
-            _logger.debug("Failed to initialize GPU monitor for AMD/HIP GPU.", exc_info=True)
+        if is_rocml_available:
+            _logger.warning(
+                "Skipping AMD GPU metrics: pyrsmi cannot identify the devices used by this run."
+            )
+            return None
 
         _logger.info("Skip logging GPU metrics. Set logger level to DEBUG for more details.")
         return None

@@ -1,23 +1,27 @@
-"""Class for monitoring CPU stats."""
+"""Collect and aggregate host CPU and memory utilization.
+
+Sections: host metrics collection.
+Naming: collect_* samples values; aggregate_* averages sampled values.
+"""
 
 import psutil
 
 from mlflow.system_metrics.metrics.base_metrics_monitor import BaseMetricsMonitor
 
 
+# ===== Host metrics collection =====
+
+
 class CPUMonitor(BaseMetricsMonitor):
-    """Class for monitoring CPU stats."""
+    """Collect host CPU and memory utilization as percentages."""
 
-    def collect_metrics(self):
-        # Get CPU metrics.
-        cpu_percent = psutil.cpu_percent()
-        self._metrics["cpu_utilization_percentage"].append(cpu_percent)
+    # ---- Sampling and aggregation ----
 
-        system_memory = psutil.virtual_memory()
-        self._metrics["system_memory_usage_megabytes"].append(system_memory.used / 1e6)
-        self._metrics["system_memory_usage_percentage"].append(
-            system_memory.used / system_memory.total * 100
-        )
+    def collect_metrics(self) -> None:
+        """Sample the host CPU and memory utilization percentages."""
+        self._metrics["cpu_util"].append(psutil.cpu_percent())
+        self._metrics["mem"].append(psutil.virtual_memory().percent)
 
-    def aggregate_metrics(self):
+    def aggregate_metrics(self) -> dict[str, float]:
+        """Return the mean percentage for each collected metric."""
         return {k: round(sum(v) / len(v), 1) for k, v in self._metrics.items()}

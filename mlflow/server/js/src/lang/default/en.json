@@ -1835,6 +1835,10 @@
     "defaultMessage": "Line Smoothness",
     "description": "Label for the smoothness slider for the graph plot for metrics"
   },
+  "TAOcmC": {
+    "defaultMessage": "System Monitor",
+    "description": "Run details page > tab selector > training hardware monitor tab"
+  },
   "TBX+Gs": {
     "defaultMessage": "Add/Edit tags",
     "description": "Key-value tag editor modal > Title of the update tags modal"
@@ -2519,6 +2523,10 @@
     "defaultMessage": "You need to provide a prompt template",
     "description": "Experiment page > new run modal > invalid state - no prompt template provided"
   },
+  "dSRJNA": {
+    "defaultMessage": "Model Monitor",
+    "description": "Run details page > tab selector > model training monitor tab"
+  },
   "dTLq6E": {
     "defaultMessage": "expand {title}",
     "description": "Common component > collapsible section > alternative label when collapsed"
@@ -2807,10 +2815,6 @@
     "defaultMessage": "Aliases:",
     "description": "A label for the aliases list in the prompt details page"
   },
-  "hFlaPP": {
-    "defaultMessage": "System metrics",
-    "description": "Run details page > tab selector > Model metrics tab"
-  },
   "hW7XxH": {
     "defaultMessage": "Logged metrics",
     "description": "Experiment tracking > runs charts > line chart configuration > logged metrics label"
@@ -2902,10 +2906,6 @@
   "j/pJM6": {
     "defaultMessage": "Last Modified",
     "description": "Label name for the last modified time under details tab on the model view page"
-  },
-  "j25Ttg": {
-    "defaultMessage": "Model metrics",
-    "description": "Run details page > tab selector > Model metrics tab"
   },
   "j7cj5r": {
     "defaultMessage": "Please log at least one table artifact containing evaluation data. <link>Learn more</link>.",
