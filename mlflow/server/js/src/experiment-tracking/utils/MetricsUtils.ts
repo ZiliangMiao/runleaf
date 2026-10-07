@@ -2,6 +2,7 @@ import { defineMessages, MessageDescriptor } from 'react-intl';
 // @ts-expect-error TS(7016): Could not find a declaration file for module 'date... Remove this comment to see the full error message
 import dateFormat from 'dateformat';
 import { MLFLOW_SYSTEM_METRIC_PREFIX } from '../constants';
+import type { KeyValueEntity } from '../types';
 
 interface MetricHistoryEntry {
   key: string;
@@ -353,6 +354,123 @@ export const truncateChartMetricString = (fullStr: string, strLen: number) => {
 
 const systemMetricPrefix = new RegExp(`^${MLFLOW_SYSTEM_METRIC_PREFIX}`);
 
-export const isSystemMetricKey = (metricKey: string) => metricKey.match(systemMetricPrefix);
+export const isSystemMetricKey = (metricKey: string): boolean =>
+  systemMetricPrefix.test(metricKey) || /^(gpu_\d+_(util|mem|power)|cpu_util|mem)$/.test(metricKey);
+
+/** Identifies benchmark namespaces without excluding legacy training metrics. */
+export const isEvaluationMetricKey = (metricKey: string): boolean =>
+  /^(benchmarks?([_-][^/]+)?|test|eval([_-][^/]+)?|evaluations?)\//.test(metricKey);
+
+// ===== Monitor metric classification =====
+
+/** Formats hardware labels with their original units without changing metric identities or values. */
+export const getSystemMonitorMetricLabel = (metricKey: string): string | undefined => {
+  if (!isSystemMetricKey(metricKey)) {
+    return undefined;
+  }
+  const segments = metricKey.replace(systemMetricPrefix, '').split('/');
+  const name = segments.pop() ?? '';
+  const nodePrefix = segments.length ? `${segments.join('/')}/` : '';
+  if (name === 'cpu_util' || name === 'cpu_utilization_percentage') {
+    return `${nodePrefix}cpu_util (%)`;
+  }
+  if (name === 'mem' || name === 'system_memory_usage_percentage') {
+    return `${nodePrefix}mem (%)`;
+  }
+  const gpu = name.match(/^(gpu_\d+)_(.+)$/);
+  if (!gpu) {
+    return undefined;
+  }
+  const labels: Record<string, string> = {
+    util: 'util (%)',
+    utilization_percentage: 'util (%)',
+    mem: 'mem (MiB)',
+    memory_used_mebibytes: 'mem (MiB)',
+    memory_usage_megabytes: 'mem (MB)',
+    power: 'power (W)',
+    power_usage_watts: 'power (W)',
+    power_watts: 'power (W)',
+  };
+  const label = labels[gpu[2]];
+  return label ? `${nodePrefix}${gpu[1]}_${label}` : undefined;
+};
+
+/** Assigns training and hardware metrics to their monitor chart, excluding evaluation results. */
+export const getMonitorMetricGroup = (metricKey: string): 'train' | 'val' | 'gpu' | 'cpu' | 'mem' | undefined => {
+  if (isEvaluationMetricKey(metricKey)) {
+    return undefined;
+  }
+  if (isSystemMetricKey(metricKey)) {
+    const name = metricKey.split('/').pop() ?? '';
+    if (
+      /^gpu_\d+_(util|mem|power|utilization_percentage|memory_used_mebibytes|memory_usage_megabytes|power_usage_watts|power_watts)$/.test(
+        name,
+      )
+    ) {
+      return 'gpu';
+    }
+    if (name === 'cpu_util' || name === 'cpu_utilization_percentage') {
+      return 'cpu';
+    }
+    if (name === 'mem' || name === 'system_memory_usage_percentage') {
+      return 'mem';
+    }
+    return undefined;
+  }
+  if (/^(epoch|train|batch)\/(gpu_|cpu_|memory_|mem_)/.test(metricKey)) {
+    return undefined;
+  }
+  if (/^(val(idation)?|valid|best|best_ckpt|best_checkpoint|early_stop)([/_]|$)/.test(metricKey)) {
+    return 'val';
+  }
+  if (
+    /^(train(ing)?|batch|lr|learning_rate|loss|epoch|metrics|qat|quant(ization)?|sparsification|sparsify|dra)([/_]|$)/.test(
+      metricKey,
+    ) ||
+    !metricKey.includes('/')
+  ) {
+    return 'train';
+  }
+  return undefined;
+};
 
 export const EXPERIMENT_RUNS_METRIC_AUTO_REFRESH_INTERVAL = 30000;
+
+/** Limits historical GPU measurements to devices selected by this training run. */
+export const isRunMonitorMetricKey = (metricKey: string, params?: Record<string, KeyValueEntity>): boolean => {
+  const group = getMonitorMetricGroup(metricKey);
+  if (group !== 'gpu') {
+    return group !== undefined;
+  }
+  const name = metricKey.split('/').pop() ?? '';
+  // New collectors confirm ownership and may use physical rather than CUDA logical indices.
+  if (/^gpu_\d+_(util|mem|power)$/.test(name)) {
+    return true;
+  }
+  const deviceIndex = Number(name.match(/^gpu_(\d+)_/)?.[1]);
+  const device = params?.['train.device']?.value.trim().toLowerCase();
+  if (device && !/^cuda(?::\d+)?$/.test(device)) {
+    return false;
+  }
+  if (params?.['train.parallel']?.value === 'data_parallel') {
+    const configuredDevices = params?.['train.gpu_ids']?.value;
+    if (configuredDevices !== undefined) {
+      let devices: unknown;
+      try {
+        devices = JSON.parse(configuredDevices);
+      } catch {
+        devices = configuredDevices.split(',').map((value) => value.trim());
+      }
+      if (!Array.isArray(devices)) {
+        devices = configuredDevices.split(',').map((value) => value.trim());
+      }
+      if (!Array.isArray(devices) || !devices.every((value) => /^\d+$/.test(String(value)))) {
+        return false;
+      }
+      return devices.some((value) => Number(value) === deviceIndex);
+    }
+  } else if (device) {
+    return deviceIndex === Number(device.split(':')[1] ?? 0);
+  }
+  return false;
+};

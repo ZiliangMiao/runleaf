@@ -20,7 +20,7 @@ import { RunNotFoundView } from '../RunNotFoundView';
 import { ErrorCodes } from '../../../common/constants';
 import NotFoundPage from '../NotFoundPage';
 import { FormattedMessage } from 'react-intl';
-import { isSystemMetricKey } from '../../utils/MetricsUtils';
+import { getMonitorMetricGroup } from '../../utils/MetricsUtils';
 import DeleteRunModal from '../modals/DeleteRunModal';
 import Routes from '../../routes';
 import { RunViewMetricCharts } from './RunViewMetricCharts';
@@ -81,8 +81,12 @@ export const RunPage = () => {
     }
 
     return [
-      Object.keys(latestMetrics).filter((metricKey) => !isSystemMetricKey(metricKey)),
-      Object.keys(latestMetrics).filter((metricKey) => isSystemMetricKey(metricKey)),
+      Object.keys(latestMetrics).filter((metricKey) =>
+        ['train', 'val'].includes(getMonitorMetricGroup(metricKey) ?? ''),
+      ),
+      Object.keys(latestMetrics).filter((metricKey) =>
+        ['gpu', 'cpu', 'mem'].includes(getMonitorMetricGroup(metricKey) ?? ''),
+      ),
     ];
   }, [latestMetrics]);
 
@@ -107,7 +111,7 @@ export const RunPage = () => {
       case RunPageTabName.MODEL_METRIC_CHARTS:
         return (
           <RunViewMetricCharts
-            key="model"
+            key={`${runUuid}-model`}
             mode="model"
             metricKeys={modelMetricKeys}
             runInfo={runInfo}
@@ -120,7 +124,7 @@ export const RunPage = () => {
       case RunPageTabName.SYSTEM_METRIC_CHARTS:
         return (
           <RunViewMetricCharts
-            key="system"
+            key={`${runUuid}-system`}
             mode="system"
             metricKeys={systemMetricKeys}
             runInfo={runInfo}

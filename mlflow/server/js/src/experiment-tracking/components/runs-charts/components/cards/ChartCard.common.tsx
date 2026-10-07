@@ -65,8 +65,8 @@ export interface ChartCardToggleProps {
 export interface ChartCardWrapperProps extends RunsChartCardReorderProps, RunsChartCardSizeProps {
   title: React.ReactNode;
   subtitle?: React.ReactNode;
-  onEdit: () => void;
-  onDelete: () => void;
+  onEdit?: () => void;
+  onDelete?: () => void;
   tooltip?: React.ReactNode;
   uuid?: string;
   dragGroupKey: RunsChartsChartsDragGroup;
@@ -227,20 +227,24 @@ const RunsChartCardWrapperRaw = ({
             />
           </DropdownMenu.Trigger>
           <DropdownMenu.Content align="end" minWidth={100}>
-            <DropdownMenu.Item
-              componentId="codegen_mlflow_app_src_experiment-tracking_components_runs-charts_components_cards_chartcard.common.tsx_288"
-              onClick={onEdit}
-              data-testid="experiment-view-compare-runs-card-edit"
-            >
-              Configure
-            </DropdownMenu.Item>
-            <DropdownMenu.Item
-              componentId="codegen_mlflow_app_src_experiment-tracking_components_runs-charts_components_cards_chartcard.common.tsx_291"
-              onClick={onDelete}
-              data-testid="experiment-view-compare-runs-card-delete"
-            >
-              Delete
-            </DropdownMenu.Item>
+            {onEdit && (
+              <DropdownMenu.Item
+                componentId="codegen_mlflow_app_src_experiment-tracking_components_runs-charts_components_cards_chartcard.common.tsx_288"
+                onClick={onEdit}
+                data-testid="experiment-view-compare-runs-card-edit"
+              >
+                Configure
+              </DropdownMenu.Item>
+            )}
+            {onDelete && (
+              <DropdownMenu.Item
+                componentId="codegen_mlflow_app_src_experiment-tracking_components_runs-charts_components_cards_chartcard.common.tsx_291"
+                onClick={onDelete}
+                data-testid="experiment-view-compare-runs-card-delete"
+              >
+                Delete
+              </DropdownMenu.Item>
+            )}
             {supportedDownloadFormats.length > 0 && onClickDownload && (
               <>
                 <DropdownMenu.Separator />
