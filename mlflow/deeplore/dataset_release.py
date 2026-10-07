@@ -523,7 +523,7 @@ def find_dependencies(sample_files: list[Path]) -> set[str]:
 
 def build_md5(path: Path) -> str:
     """Return the hex md5 of one file's bytes."""
-    digest = hashlib.md5()  # noqa: S324 -- content identity, matching DVC's default
+    digest = hashlib.md5(usedforsecurity=False)
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1 << 20), b""):
             digest.update(chunk)

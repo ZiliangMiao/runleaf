@@ -1,5 +1,5 @@
 /**
- * Run evaluations: response types and requests, shared fields, evaluation records, then the run tab.
+ * Run evaluations: response types and requests, shared fields and lists, evaluation records, then the run tab.
  * Naming: fetch* reads the server; format* prepares display values; components describe their content.
  */
 import { useQuery } from '@tanstack/react-query';
@@ -29,17 +29,12 @@ interface RunEvaluation {
   association_status: 'confirmed' | 'pending';
   dataset_name: string | null;
   dataset_version: string | null;
-  benchmark_name: string | null;
   test_hash: string | null;
   ckpt_path: string | null;
   ckpt_hash: string | null;
-  ckpt_hash_algorithm: string | null;
   evaluated_at: number | null;
   metrics: Record<string, number | null>;
-  artifact_path: string | null;
-  source_artifact: string | null;
-  source_row: number | null;
-  metadata: Record<string, unknown> & { incomplete_reasons?: Record<string, string> };
+  params: Record<string, string | number | boolean | null>;
   created_at: number;
 }
 
@@ -57,7 +52,7 @@ const fetchRunEvaluations = async (runUuid: string): Promise<RunEvaluation[]> =>
   }
 };
 
-// ===== Shared fields =====
+// ===== Shared fields and lists =====
 
 const formatEvaluationTime = (timestamp: number): string =>
   new Date(timestamp).toLocaleString('en-US', { timeZoneName: 'short' });
@@ -84,6 +79,50 @@ const EvaluationArtifactLink = ({
   artifactPath: string;
 }) => <Link to={Routes.getRunPageRoute(experimentId, runUuid, artifactPath)}>{artifactPath}</Link>;
 
+const EvaluationValues = ({
+  label,
+  values,
+}: {
+  label: 'Metrics' | 'Params';
+  values: Record<string, string | number | boolean | null>;
+}) => {
+  const { theme } = useDesignSystemTheme();
+  const entries = Object.entries(values).sort(([left], [right]) => left.localeCompare(right));
+  return (
+    <details css={{ marginTop: theme.spacing.md }}>
+      <summary css={{ cursor: 'pointer', color: theme.colors.actionPrimaryBackgroundDefault }}>
+        {label} ({entries.length})
+      </summary>
+      {entries.length ? (
+        <div css={{ overflowX: 'auto', marginTop: theme.spacing.md }}>
+          <Table>
+            <TableRow isHeader>
+              <TableHeader componentId="mlflow.run_evaluations.entry_name">
+                {label === 'Metrics' ? 'Metric' : 'Parameter'}
+              </TableHeader>
+              <TableHeader componentId="mlflow.run_evaluations.entry_value">Value</TableHeader>
+            </TableRow>
+            {entries.map(([name, value]) => (
+              <TableRow key={name}>
+                <TableCell multiline css={{ overflowWrap: 'anywhere' }}>
+                  {name}
+                </TableCell>
+                <TableCell multiline css={{ overflowWrap: 'anywhere' }}>
+                  {value === null ? <Typography.Hint>Not recorded</Typography.Hint> : String(value)}
+                </TableCell>
+              </TableRow>
+            ))}
+          </Table>
+        </div>
+      ) : (
+        <Typography.Paragraph css={{ marginTop: theme.spacing.md }}>
+          {label === 'Metrics' ? 'No metrics recorded.' : 'No parameters recorded.'}
+        </Typography.Paragraph>
+      )}
+    </details>
+  );
+};
+
 // ===== Evaluation records =====
 
 const EvaluationRecord = ({
@@ -96,8 +135,6 @@ const EvaluationRecord = ({
   runUuid: string;
 }) => {
   const { theme } = useDesignSystemTheme();
-  const metricEntries = Object.entries(evaluation.metrics).sort(([left], [right]) => left.localeCompare(right));
-  const { incomplete_reasons: incompleteReasons = {}, ...additionalMetadata } = evaluation.metadata;
   const fieldStyles = {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 320px), 1fr))',
@@ -126,7 +163,7 @@ const EvaluationRecord = ({
       >
         <div css={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: theme.spacing.sm }}>
           <Typography.Title level={3} withoutMargins>
-            {evaluation.benchmark_name ?? evaluation.dataset_name ?? 'Evaluation'}
+            {evaluation.dataset_name ?? 'Pending dataset'}
           </Typography.Title>
           {evaluation.association_status === 'pending' && (
             <Tag componentId="mlflow.run_evaluations.pending_association" color="default">
@@ -141,6 +178,7 @@ const EvaluationRecord = ({
         </Typography.Hint>
       </div>
       <dl css={fieldStyles}>
+        <EvaluationField label="Evaluation ID">{evaluation.evaluation_id}</EvaluationField>
         <EvaluationField label="Dataset name">{evaluation.dataset_name}</EvaluationField>
         <EvaluationField label="Dataset version">{evaluation.dataset_version}</EvaluationField>
         <EvaluationField label="Test hash">{evaluation.test_hash}</EvaluationField>
@@ -149,84 +187,11 @@ const EvaluationRecord = ({
             <EvaluationArtifactLink experimentId={experimentId} runUuid={runUuid} artifactPath={evaluation.ckpt_path} />
           ) : null}
         </EvaluationField>
-        <EvaluationField
-          label={`Checkpoint hash${evaluation.ckpt_hash_algorithm ? ` (${evaluation.ckpt_hash_algorithm})` : ''}`}
-        >
-          {evaluation.ckpt_hash}
-        </EvaluationField>
-        <EvaluationField label="Report artifacts">
-          {evaluation.artifact_path ? (
-            <EvaluationArtifactLink
-              experimentId={experimentId}
-              runUuid={runUuid}
-              artifactPath={evaluation.artifact_path}
-            />
-          ) : null}
-        </EvaluationField>
+        <EvaluationField label="Checkpoint hash">{evaluation.ckpt_hash}</EvaluationField>
+        <EvaluationField label="Recorded time">{formatEvaluationTime(evaluation.created_at)}</EvaluationField>
       </dl>
-      {Object.keys(incompleteReasons).length > 0 && (
-        <Typography.Paragraph css={{ marginTop: theme.spacing.md, marginBottom: 0 }}>
-          <Typography.Hint>Some historical fields are unavailable. Expand details to see why.</Typography.Hint>
-        </Typography.Paragraph>
-      )}
-      <details css={{ marginTop: theme.spacing.md }}>
-        <summary css={{ cursor: 'pointer', color: theme.colors.actionPrimaryBackgroundDefault }}>
-          Metrics ({metricEntries.length}) and details
-        </summary>
-        {metricEntries.length ? (
-          <div css={{ overflowX: 'auto', marginTop: theme.spacing.md, marginBottom: theme.spacing.md }}>
-            <Table aria-label={`Metrics for evaluation ${evaluation.evaluation_id}`}>
-              <TableRow isHeader>
-                <TableHeader componentId="mlflow.run_evaluations.metric_name">Metric</TableHeader>
-                <TableHeader componentId="mlflow.run_evaluations.metric_value">Value</TableHeader>
-              </TableRow>
-              {metricEntries.map(([name, value]) => (
-                <TableRow key={name}>
-                  <TableCell multiline css={{ overflowWrap: 'anywhere' }}>
-                    {name}
-                  </TableCell>
-                  <TableCell>{value ?? <Typography.Hint>Not recorded</Typography.Hint>}</TableCell>
-                </TableRow>
-              ))}
-            </Table>
-          </div>
-        ) : (
-          <Typography.Paragraph css={{ marginTop: theme.spacing.md }}>No metrics recorded.</Typography.Paragraph>
-        )}
-        <dl css={fieldStyles}>
-          <EvaluationField label="Evaluation ID">{evaluation.evaluation_id}</EvaluationField>
-          <EvaluationField label="Recorded">{formatEvaluationTime(evaluation.created_at)}</EvaluationField>
-          {evaluation.source_artifact && (
-            <EvaluationField label="Original evaluation table">
-              <EvaluationArtifactLink
-                experimentId={experimentId}
-                runUuid={runUuid}
-                artifactPath={evaluation.source_artifact}
-              />
-            </EvaluationField>
-          )}
-        </dl>
-        {Object.keys(incompleteReasons).length > 0 && (
-          <div css={{ marginTop: theme.spacing.md }}>
-            <Typography.Title level={4} withoutMargins>
-              Historical record details
-            </Typography.Title>
-            <ul css={{ marginBottom: 0 }}>
-              {Object.entries(incompleteReasons).map(([field, reason]) => (
-                <li key={field}>{reason}</li>
-              ))}
-            </ul>
-          </div>
-        )}
-        {Object.keys(additionalMetadata).length > 0 && (
-          <details css={{ marginTop: theme.spacing.md }}>
-            <summary css={{ cursor: 'pointer' }}>Additional metadata</summary>
-            <pre css={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', marginTop: theme.spacing.sm }}>
-              {JSON.stringify(additionalMetadata, null, 2)}
-            </pre>
-          </details>
-        )}
-      </details>
+      <EvaluationValues label="Metrics" values={evaluation.metrics} />
+      <EvaluationValues label="Params" values={evaluation.params} />
     </section>
   );
 };
