@@ -4,9 +4,19 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Alert, Button, Input, LegacySelect, Modal, Spinner, useDesignSystemTheme } from '@databricks/design-system';
+import {
+  Alert,
+  Button,
+  Checkbox,
+  Input,
+  LegacySelect,
+  Modal,
+  Spinner,
+  useDesignSystemTheme,
+} from '@databricks/design-system';
 import { ErrorWrapper } from '../../../common/utils/ErrorWrapper';
 import {
+  DATASET_UNITS,
   fetchDatasetRelease,
   fetchDatasetReleases,
   isReleaseJobActive,
@@ -71,6 +81,7 @@ export const DatasetReleasePanel = ({ dataset, onReleased }: { dataset: DatasetS
   const { theme } = useDesignSystemTheme();
   const [version, setVersion] = useState(dataset.next_versions[0] ?? '');
   const [change, setChange] = useState('');
+  const [deletions, setDeletions] = useState<string[]>([]);
   const [jobId, setJobId] = useState<string>();
   const [restoredJobId, setRestoredJobId] = useState<string>();
   const [startError, setStartError] = useState<string>();
@@ -105,6 +116,7 @@ export const DatasetReleasePanel = ({ dataset, onReleased }: { dataset: DatasetS
       // The description belongs to the version just released here, not to the next one.
       if (releasedJobId === jobId) {
         setChange('');
+        setDeletions([]);
       }
       onReleased();
     }
@@ -118,11 +130,27 @@ export const DatasetReleasePanel = ({ dataset, onReleased }: { dataset: DatasetS
     }
   }, [nextVersions, version]);
 
+  // Only a directory that is gone can be deleted; one left unlisted fails the check instead.
+  const missingUnits = DATASET_UNITS.filter((unit) => dataset.units[unit] === false);
+  const unfinishedVersion = dataset.unfinished_version;
+  const unfinishedChange = (dataset.metadata?.changelog ?? [])
+    .map((entry) => (unfinishedVersion ? entry[unfinishedVersion] : undefined))
+    .find(Boolean);
+
   const startJob = async (dryRun: boolean) => {
     setSubmitting(true);
     setStartError(undefined);
     try {
-      const started = await startDatasetRelease(dataset.name, version, change.trim(), dryRun);
+      // Releasing the unfinished version again resumes it at the failed step.
+      const started = unfinishedVersion
+        ? await startDatasetRelease(dataset.name, unfinishedVersion, unfinishedChange ?? unfinishedVersion, [], false)
+        : await startDatasetRelease(
+            dataset.name,
+            version,
+            change.trim(),
+            deletions.filter((unit) => missingUnits.some((missing) => missing === unit)),
+            dryRun,
+          );
       setJobId(started.job_id);
     } catch (error) {
       setStartError(getErrorMessage(error));
@@ -130,9 +158,12 @@ export const DatasetReleasePanel = ({ dataset, onReleased }: { dataset: DatasetS
       setSubmitting(false);
     }
   };
-  const disabled = submitting || jobIsActive || !version || !change.trim() || !dataset.repo;
+  const disabled =
+    submitting || jobIsActive || !version || !change.trim() || !dataset.repo || Boolean(unfinishedVersion);
   const formHint = !dataset.repo
     ? 'A local repository is required to check or release this dataset.'
+    : unfinishedVersion
+    ? 'The previous release must be registered before the next one can start.'
     : !version
     ? 'No next release version is available.'
     : jobIsActive
@@ -167,7 +198,10 @@ export const DatasetReleasePanel = ({ dataset, onReleased }: { dataset: DatasetS
               aria-describedby={formHint ? 'dataset-release-hint' : undefined}
               value={version}
               onChange={(value: string) => setVersion(value)}
-              options={nextVersions.map((next, index) => ({ value: next, label: `${next} (${BUMP_LABELS[index]})` }))}
+              options={nextVersions.map((next, index) => ({
+                value: next,
+                label: `${next} (${nextVersions.length === 1 ? 'first release' : BUMP_LABELS[index]})`,
+              }))}
               css={{ width: '100%' }}
             />
           </div>
@@ -197,12 +231,58 @@ export const DatasetReleasePanel = ({ dataset, onReleased }: { dataset: DatasetS
             Release
           </Button>
         </div>
+        {missingUnits.length > 0 && !unfinishedVersion && (
+          <div
+            aria-label="Deletion list"
+            css={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: theme.spacing.md, marginTop: theme.spacing.md }}
+          >
+            <span css={{ color: theme.colors.textSecondary }}>Delete with this release</span>
+            {missingUnits.map((unit) => (
+              <Checkbox
+                key={unit}
+                componentId="mlflow.datasets.release.deletion"
+                isChecked={deletions.includes(unit)}
+                onChange={(checked) =>
+                  setDeletions((current) =>
+                    checked ? [...current.filter((listed) => listed !== unit), unit] : current.filter((listed) => listed !== unit),
+                  )
+                }
+              >
+                {unit}
+              </Checkbox>
+            ))}
+            <span css={{ color: theme.colors.textSecondary }}>
+              A missing directory that is not listed fails the check. Deleting a split needs a major version.
+            </span>
+          </div>
+        )}
         {formHint && (
           <div id="dataset-release-hint" css={{ color: theme.colors.textSecondary, marginTop: theme.spacing.md }}>
             {formHint}
           </div>
         )}
       </div>
+      {unfinishedVersion && (
+        <Alert
+          componentId="mlflow.datasets.release.unfinished"
+          type="warning"
+          closable={false}
+          message={`Release ${unfinishedVersion} is committed but not registered`}
+          description={
+            <div css={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: theme.spacing.md }}>
+              <span>Resolve the cause of the failure, then retry; the release continues from the failed step.</span>
+              <Button
+                componentId="mlflow.datasets.release.retry"
+                type="primary"
+                disabled={submitting || jobIsActive}
+                onClick={() => startJob(false)}
+              >
+                Retry
+              </Button>
+            </div>
+          }
+        />
+      )}
       {startError && (
         <Alert
           componentId="mlflow.datasets.release.start_error"

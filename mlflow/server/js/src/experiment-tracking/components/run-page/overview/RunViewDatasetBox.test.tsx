@@ -40,9 +40,11 @@ describe.each([
         {
           name: 'dataset_train',
           repo: null,
+          status: 'released',
           units: {},
           metadata: null,
           next_versions: [],
+          unfinished_version: null,
           error: null,
           latest_release: null,
         },

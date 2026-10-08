@@ -1,10 +1,13 @@
-"""Released dataset versions and release jobs, stored in the tracking database.
+"""Datasets, their versions and release jobs, stored in the tracking database.
 
-Three tables live beside MLflow's own in the same database. They are created on
+Four tables live beside MLflow's own in the same database. They are created on
 first use and are NOT part of MLflow's Alembic history, so the schema revision
 MLflow verifies at startup is untouched and stock MLflow tooling keeps working
-against the database.
+against the database. Columns added after a table first shipped are appended
+in place on first use.
 
+- ``deeplore_datasets``: one row per dataset, holding its repository and
+  whether it is archived. A name stays taken for good.
 - ``deeplore_dataset_versions``: one row per known ``(name, version)``,
   including historical identities without a complete release snapshot.
 - ``deeplore_dataset_changelog``: historical changes, including versions that
@@ -16,13 +19,15 @@ Every function takes the tracking server's ``SqlAlchemyStore`` and uses its
 engine and managed sessions.
 
 Sections:
-- Tables: release, changelog and job records.
+- Tables: dataset, release, changelog and job records.
+- Datasets: create, archive and delete datasets.
 - Changelog: persist and list historical changes without inventing releases.
 - Versions: register and list released versions.
 - Jobs: create, update and read release jobs.
 
-Verb paradigm: ``create_*`` / ``update_*`` / ``register_*`` write, ``get_*``
-returns one row or ``None``, ``list_*`` returns many; all return plain dicts.
+Verb paradigm: ``create_*`` / ``update_*`` / ``register_*`` / ``delete_*`` write,
+``get_*`` returns one row or ``None``, ``list_*`` returns many; all return plain
+dicts.
 """
 
 import json
@@ -40,7 +45,7 @@ from mlflow.deeplore.dataset_release import (
     parse_version,
 )
 from mlflow.exceptions import MlflowException
-from mlflow.protos.databricks_pb2 import INVALID_PARAMETER_VALUE
+from mlflow.protos.databricks_pb2 import INVALID_PARAMETER_VALUE, RESOURCE_ALREADY_EXISTS
 
 # ===== Tables =====
 
@@ -51,6 +56,31 @@ JOB_RUNNING = "running"
 JOB_SUCCEEDED = "succeeded"
 JOB_FAILED = "failed"
 JOB_ACTIVE: tuple[str, ...] = (JOB_PENDING, JOB_RUNNING)
+
+
+class SqlDatasetEntry(_Base):
+    """One dataset known to MLflow, released or not.
+
+    Owns the name reservation, the repository that holds the dataset and the
+    archived flag. It does not own versions, which are ``SqlDatasetVersion`` rows.
+    """
+
+    __tablename__ = "deeplore_datasets"
+
+    name = Column(String(256), primary_key=True)
+    # Server-side repository root; null when registered without one.
+    repo = Column(String(1024))
+    archived = Column(Boolean, nullable=False, default=False)
+    created_at = Column(BigInteger, nullable=False)
+
+    def to_dict(self) -> dict:
+        """Return the row as a JSON-ready dict."""
+        return {
+            "name": self.name,
+            "repo": self.repo,
+            "archived": bool(self.archived),
+            "created_at": self.created_at,
+        }
 
 
 class SqlDatasetVersion(_Base):
@@ -72,6 +102,9 @@ class SqlDatasetVersion(_Base):
     git_repo = Column(String(1024))
     git_tag = Column(String(512))
     git_commit = Column(String(64))
+    # System user that ran the release; null for versions that predate the field.
+    released_by = Column(String(256))
+    # Registration time, which is the release time.
     created_at = Column(BigInteger, nullable=False)
 
     def to_dict(self) -> dict:
@@ -85,6 +118,7 @@ class SqlDatasetVersion(_Base):
             "git_repo": self.git_repo,
             "git_tag": self.git_tag,
             "git_commit": self.git_commit,
+            "released_by": self.released_by,
             "created_at": self.created_at,
         }
 
@@ -103,6 +137,8 @@ class SqlDatasetReleaseJob(_Base):
     name = Column(String(256), nullable=False)
     version = Column(String(64), nullable=False)
     change = Column(Text, nullable=False)
+    # JSON: list of units to delete with this release; null means none.
+    deletions = Column(Text)
     dry_run = Column(Boolean, nullable=False)
     status = Column(String(16), nullable=False)
     pid = Column(Integer)
@@ -123,6 +159,7 @@ class SqlDatasetReleaseJob(_Base):
             "name": self.name,
             "version": self.version,
             "change": self.change,
+            "deletions": json.loads(self.deletions or "[]"),
             "dry_run": self.dry_run,
             "status": self.status,
             "pid": self.pid,
@@ -150,18 +187,138 @@ class SqlDatasetChangelog(_Base):
 
 
 _initialized_engines: set[int] = set()
+# Columns added after their table first shipped: table -> column -> DDL type.
+_ADDED_COLUMNS: dict[str, dict[str, str]] = {
+    "deeplore_dataset_versions": {"released_by": "VARCHAR(256)"},
+    "deeplore_dataset_release_jobs": {"deletions": "TEXT"},
+}
+
+
+def _ensure_columns(engine: Any) -> None:
+    """Append the columns a table created by an earlier revision lacks."""
+    inspector = sqlalchemy.inspect(engine)
+    for table, columns in _ADDED_COLUMNS.items():
+        existing = {column["name"] for column in inspector.get_columns(table)}
+        for name, ddl_type in columns.items():
+            if name in existing:
+                continue
+            try:
+                with engine.begin() as connection:
+                    connection.execute(
+                        sqlalchemy.text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl_type}")
+                    )
+            except sqlalchemy.exc.OperationalError:
+                # Another server worker added the column first.
+                pass
 
 
 def _session(store: Any) -> Any:
     """Open a managed session, creating the tables on first use per engine."""
     if id(store.engine) not in _initialized_engines:
         _Base.metadata.create_all(store.engine, checkfirst=True)
+        _ensure_columns(store.engine)
         _initialized_engines.add(id(store.engine))
     return store.ManagedSessionMaker()
 
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+# ===== Datasets =====
+
+
+def create_dataset(store: Any, name: str, repo: Optional[str]) -> dict:
+    """Register a dataset, taking its name for good.
+
+    Args:
+        store: The tracking server's SQL store.
+        name: Dataset name.
+        repo: Server-side repository root that holds the dataset, if known.
+
+    Returns:
+        The new dataset row.
+
+    Raises:
+        MlflowException: If the name is already taken, archived datasets included.
+    """
+    with _session(store) as session:
+        taken = session.get(SqlDatasetEntry, name) or session.execute(
+            sqlalchemy.select(SqlDatasetVersion).where(SqlDatasetVersion.name == name).limit(1)
+        ).first()
+        if taken is not None:
+            raise MlflowException(
+                f"dataset {name!r} already exists", error_code=RESOURCE_ALREADY_EXISTS
+            )
+        row = SqlDatasetEntry(name=name, repo=repo, archived=False, created_at=_now_ms())
+        session.add(row)
+        session.flush()
+        return row.to_dict()
+
+
+def list_datasets(store: Any) -> dict[str, dict]:
+    """Return every registered dataset row, keyed by name."""
+    with _session(store) as session:
+        rows = session.execute(sqlalchemy.select(SqlDatasetEntry)).scalars()
+        return {row.name: row.to_dict() for row in rows}
+
+
+def get_dataset(store: Any, name: str) -> Optional[dict]:
+    """Return one dataset row, or ``None`` if the name has no row."""
+    with _session(store) as session:
+        row = session.get(SqlDatasetEntry, name)
+        return row.to_dict() if row is not None else None
+
+
+def update_dataset_archived(
+    store: Any, name: str, archived: bool, repo: Optional[str] = None
+) -> dict:
+    """Set a dataset's archived flag.
+
+    A dataset released before this table existed has versions but no row; the
+    row is created here so the flag has a home.
+
+    Args:
+        store: The tracking server's SQL store.
+        name: Dataset name.
+        archived: The new flag.
+        repo: Repository root to remember, needed to restore an archived dataset.
+
+    Returns:
+        The updated dataset row.
+    """
+    with _session(store) as session:
+        row = session.get(SqlDatasetEntry, name)
+        if row is None:
+            row = SqlDatasetEntry(name=name, repo=None, created_at=_now_ms())
+            session.add(row)
+        row.archived = archived
+        row.repo = repo or row.repo
+        session.flush()
+        return row.to_dict()
+
+
+def delete_dataset(store: Any, name: str) -> None:
+    """Remove a dataset that was never released, freeing its name.
+
+    Args:
+        store: The tracking server's SQL store.
+        name: Dataset name.
+
+    Raises:
+        MlflowException: If the dataset has versions; those are only archived.
+    """
+    with _session(store) as session:
+        released = session.execute(
+            sqlalchemy.select(SqlDatasetVersion).where(SqlDatasetVersion.name == name).limit(1)
+        ).first()
+        if released is not None:
+            raise MlflowException(
+                f"dataset {name!r} has released versions; archive it instead",
+                error_code=INVALID_PARAMETER_VALUE,
+            )
+        for table in (SqlDatasetChangelog, SqlDatasetEntry):
+            session.execute(sqlalchemy.delete(table).where(table.name == name))
 
 
 # ===== Changelog =====
@@ -252,20 +409,23 @@ def register_historical_dataset_version(
 
 
 def register_dataset_version(store: Any, record: dict) -> dict:
-    """Insert or refresh one released version.
+    """Register one released version; a released version is never changed.
 
-    Idempotent on ``(name, version)`` so a resumed release can register again.
+    A historical identity, known only by its hashes, may be completed once by
+    the release that carries the same hashes.
 
     Args:
         store: The tracking server's SQL store.
         record: ``name``, ``version``, ``change``, ``hashes``, ``metadata``,
-            ``git_repo``, ``git_tag`` and ``git_commit``.
+            ``git_repo``, ``git_tag`` and ``git_commit``, optionally ``released_by``.
 
     Returns:
         The stored row.
 
     Raises:
-        MlflowException: If a required field is missing or empty.
+        MlflowException: If a required field is missing or malformed, the
+            ``(name, version)`` is already released, or its hashes conflict
+            with a known historical identity.
     """
     required = (
         "name",
@@ -287,6 +447,7 @@ def register_dataset_version(store: Any, record: dict) -> dict:
         raise MlflowException("metadata must be a mapping", error_code=INVALID_PARAMETER_VALUE)
     metadata = build_metadata(record["metadata"])
     try:
+        parse_version(record["version"])
         changes = parse_changelog(metadata.get("changelog"))
     except ValueError as error:
         raise MlflowException(str(error), error_code=INVALID_PARAMETER_VALUE) from error
@@ -302,14 +463,16 @@ def register_dataset_version(store: Any, record: dict) -> dict:
                 name=record["name"], version=record["version"], created_at=_now_ms()
             )
             session.add(row)
+        elif row.git_commit is not None:
+            raise MlflowException(
+                f"{row.name} {row.version} is already registered; a released version "
+                "cannot be changed",
+                error_code=RESOURCE_ALREADY_EXISTS,
+            )
         else:
             previous_hashes = json.loads(row.hashes)
             incoming_hashes = record["hashes"]
-            protected_splits = (
-                previous_hashes.keys() | incoming_hashes.keys()
-                if row.git_commit is not None
-                else {split for split, digest in previous_hashes.items() if digest}
-            )
+            protected_splits = {split for split, digest in previous_hashes.items() if digest}
             for split in protected_splits:
                 if (previous_hashes.get(split) or "").lower() != (
                     incoming_hashes.get(split) or ""
@@ -324,6 +487,9 @@ def register_dataset_version(store: Any, record: dict) -> dict:
         row.git_repo = record["git_repo"]
         row.git_tag = record["git_tag"]
         row.git_commit = record["git_commit"]
+        row.released_by = record.get("released_by")
+        if session.get(SqlDatasetEntry, record["name"]) is None:
+            session.add(SqlDatasetEntry(name=record["name"], repo=None, created_at=_now_ms()))
         _register_changelog(session, record["name"], changes)
         session.flush()
         return row.to_dict()
@@ -350,7 +516,13 @@ def list_dataset_versions(store: Any, name: Optional[str] = None) -> list[dict]:
 
 
 def create_release_job(
-    store: Any, repo: str, name: str, version: str, change: str, dry_run: bool
+    store: Any,
+    repo: str,
+    name: str,
+    version: str,
+    change: str,
+    dry_run: bool,
+    deletions: Optional[list[str]] = None,
 ) -> dict:
     """Record a new job, refusing a second active one for the same repository.
 
@@ -361,6 +533,7 @@ def create_release_job(
         version: Requested version.
         change: One-line change description.
         dry_run: Whether the job only checks.
+        deletions: Units to delete with this release.
 
     Returns:
         The new job row, status ``pending``.
@@ -391,6 +564,7 @@ def create_release_job(
             name=name,
             version=version,
             change=change,
+            deletions=json.dumps(list(deletions or [])),
             dry_run=dry_run,
             status=JOB_PENDING,
             steps="{}",
