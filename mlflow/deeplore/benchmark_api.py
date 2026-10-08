@@ -16,8 +16,7 @@ from flask import Response, jsonify
 from sqlalchemy.orm import aliased
 
 from mlflow.deeplore import dataset_registry, evaluation_registry
-from mlflow.deeplore.dataset_api import build_dataset_summary, find_repos
-from mlflow.deeplore.dataset_release import find_datasets, parse_hashes, parse_version
+from mlflow.deeplore.dataset_release import parse_version
 from mlflow.exceptions import MlflowException
 from mlflow.protos.databricks_pb2 import INVALID_PARAMETER_VALUE
 from mlflow.store.tracking.dbmodels.models import (
@@ -87,16 +86,6 @@ def _build_catalog(store: SqlAlchemyStore) -> dict[tuple[str, str], dict[str, An
             version["hashes"].get("test"),
             version["metadata"],
         )
-    for repository in find_repos():
-        for dataset in find_datasets(repository):
-            metadata = build_dataset_summary(dataset, []).get("metadata") or {}
-            _add_dataset(
-                groups,
-                dataset.name,
-                metadata.get("version"),
-                parse_hashes(metadata).get("test"),
-                metadata,
-            )
     return groups
 
 
@@ -111,7 +100,7 @@ def _build_historical_versions(
     with evaluation_registry._session(store) as session:
         evaluation = evaluation_registry.SqlEvaluation
         identities = [
-            (row.dataset_name, row.dataset_version, row.test_hash)
+            (row.dataset_name, row.dataset_version, row.dataset_hash)
             for row in session.execute(
                 sqlalchemy.select(evaluation).where(
                     evaluation.association_status == "confirmed"
@@ -228,9 +217,9 @@ def build_benchmarks(store: SqlAlchemyStore, experiment_id: str) -> dict[str, An
             )
         )
         for row in session.execute(query).scalars():
-            if row.test_hash is None:
+            if row.dataset_hash is None:
                 continue
-            group = _get_group(groups, row.dataset_name, row.test_hash)
+            group = _get_group(groups, row.dataset_name, row.dataset_hash)
             group["dataset_versions"].add(row.dataset_version)
             result = row.to_dict()
             group["metric_names"].update(result["metrics"])
@@ -250,8 +239,19 @@ def build_benchmarks(store: SqlAlchemyStore, experiment_id: str) -> dict[str, An
             group["dataset_versions"]
         )
         group["metric_names"] = sorted(group["metric_names"])
-        group["evaluations"].sort(
-            key=lambda row: (positions[row["run_id"]], row["evaluation_id"])
+        # A run that evaluated several model files shows its latest result.
+        latest: dict[str, dict[str, Any]] = {}
+        for result in group["evaluations"]:
+            shown = latest.get(result["run_id"])
+            recency = (result["evaluation_time"] or 0, result["evaluation_id"])
+            if shown is None or recency > (
+                shown["evaluation_time"] or 0,
+                shown["evaluation_id"],
+            ):
+                latest[result["run_id"]] = result
+        group["evaluations"] = sorted(
+            latest.values(),
+            key=lambda row: (positions[row["run_id"]], row["evaluation_id"]),
         )
         benchmarks.append(group)
     return {

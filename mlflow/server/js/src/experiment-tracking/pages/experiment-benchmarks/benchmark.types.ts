@@ -11,7 +11,7 @@ export interface BenchmarkRun {
 export interface BenchmarkEvaluation {
   evaluation_id: string;
   run_id: string;
-  evaluated_at: number | null;
+  evaluation_time: number | null;
   metrics: Record<string, number | null>;
 }
 

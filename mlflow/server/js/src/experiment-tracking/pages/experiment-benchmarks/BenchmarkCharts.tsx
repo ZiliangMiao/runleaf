@@ -44,7 +44,7 @@ const buildChartData = (
       const value = evaluation?.metrics[column.metric];
       if (typeof value === 'number' && Number.isFinite(value)) {
         const key = buildMetricKey(column);
-        metrics[key] = { key, value, step: 0, timestamp: evaluation?.evaluated_at ?? 0 };
+        metrics[key] = { key, value, step: 0, timestamp: evaluation?.evaluation_time ?? 0 };
       }
     });
     return {

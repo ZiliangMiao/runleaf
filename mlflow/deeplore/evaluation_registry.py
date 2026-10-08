@@ -1,8 +1,9 @@
 """Benchmark evaluation records stored beside MLflow's tracking tables.
 
 Sections: Tables, Validation, Records. Each evaluation owns its metrics and
-parameters; checkpoint artifacts remain owned by MLflow's artifact store.
-Each run has one current result for each dataset name and known test hash.
+parameters; the evaluated model file remains owned by MLflow's artifact store.
+Each run has one current result per model file, dataset name and test hash,
+and the dataset identity must be a version registered in MLflow.
 All content hashes use MD5. Previously imported results remain readable.
 
 Naming table: ``validate_*`` checks input, ``create_*`` inserts, ``get_*`` reads
@@ -32,17 +33,12 @@ from sqlalchemy import (
     String,
     Text,
 )
-from sqlalchemy.orm import aliased, declarative_base, relationship
+from sqlalchemy.orm import declarative_base, relationship
 
 from mlflow.deeplore import dataset_registry
 from mlflow.exceptions import MlflowException
 from mlflow.protos.databricks_pb2 import INVALID_PARAMETER_VALUE
-from mlflow.store.tracking.dbmodels.models import (
-    SqlDataset,
-    SqlInput,
-    SqlInputTag,
-    SqlRun,
-)
+from mlflow.store.tracking.dbmodels.models import SqlRun
 
 if TYPE_CHECKING:
     from contextlib import AbstractContextManager
@@ -60,18 +56,20 @@ _initialization_lock = threading.Lock()
 
 
 class SqlEvaluation(_Base):
-    """Own one current evaluation and its dataset identity.
+    """Own one current evaluation of a model file on a dataset version.
 
-    Dataset identities are validated against the dataset catalog. Checkpoint
-    bytes remain in the associated run's artifact store.
+    The dataset identity is a registered dataset version, whose test hash is
+    the evaluation's ``dataset_hash``. The model file's bytes remain in the
+    associated run's artifact store.
     """
 
     __tablename__ = "deeplore_evaluations"
     __table_args__ = (
         Index("index_deeplore_evaluations_run_time", "run_id", "evaluation_time"),
         Index(
-            "index_deeplore_evaluations_run_dataset_version",
+            "index_deeplore_evaluations_run_model_dataset_version",
             "run_id",
+            "checkpoint_path",
             "dataset_name",
             "dataset_version",
             unique=True,
@@ -103,10 +101,10 @@ class SqlEvaluation(_Base):
     dataset_version = Column(String(64))
     association_status = Column(String(16), nullable=False)
     benchmark_name = Column(String(256), nullable=False)
-    # Keep API attributes stable while storage names match the evaluation card.
-    ckpt_path = Column("checkpoint_path", String(1024))
-    ckpt_hash = Column("checkpoint_hash", String(32))
-    evaluated_at = Column("evaluation_time", BigInteger)
+    # The columns predate evaluating model files other than checkpoints.
+    model_path = Column("checkpoint_path", String(1024))
+    model_hash = Column("checkpoint_hash", String(32))
+    evaluation_time = Column(BigInteger)
     metrics_json = Column("metrics", Text, nullable=False)
     params_json = Column("params", Text, nullable=False)
     metadata_json = Column(Text, nullable=False)
@@ -118,8 +116,8 @@ class SqlEvaluation(_Base):
     # ---- Serialization ----
 
     @property
-    def test_hash(self) -> str | None:
-        """Return test content from the associated immutable dataset version."""
+    def dataset_hash(self) -> str | None:
+        """Return the test hash of the associated immutable dataset version."""
         if self.dataset_version_record is None:
             return None
         content_hash = json.loads(self.dataset_version_record.hashes).get("test")
@@ -130,18 +128,44 @@ class SqlEvaluation(_Base):
         return {
             "evaluation_id": self.evaluation_id,
             "run_id": self.run_id,
+            "evaluation_time": self.evaluation_time,
             "dataset_name": self.dataset_name,
             "dataset_version": self.dataset_version,
+            "dataset_hash": self.dataset_hash,
             "association_status": self.association_status,
             "benchmark_name": self.dataset_name or self.benchmark_name,
-            "test_hash": self.test_hash,
-            "ckpt_path": self.ckpt_path,
-            "ckpt_hash": self.ckpt_hash,
-            "evaluated_at": self.evaluated_at,
+            "model_path": self.model_path,
+            "model_hash": self.model_hash,
             "metrics": json.loads(self.metrics_json),
             "params": json.loads(self.params_json),
             "created_at": self.created_at,
         }
+
+
+# Unique keys of earlier revisions, which allowed one model file per dataset version.
+_LEGACY_UNIQUE_INDEXES: tuple[str, ...] = (
+    "index_deeplore_evaluations_run_dataset_version",
+    "index_deeplore_evaluations_run_dataset_test",
+)
+
+
+def _ensure_indexes(engine: Engine) -> None:
+    """Swap an earlier revision's unique key for the one that holds the model file."""
+    reflected = sqlalchemy.Table(
+        SqlEvaluation.__tablename__,
+        sqlalchemy.MetaData(),
+        autoload_with=engine,
+        resolve_fks=False,
+    )
+    try:
+        for index in reflected.indexes:
+            if index.name in _LEGACY_UNIQUE_INDEXES:
+                index.drop(engine)
+        for index in SqlEvaluation.__table__.indexes:
+            index.create(engine, checkfirst=True)
+    except sqlalchemy.exc.OperationalError:
+        # Another server worker swapped the indexes first.
+        pass
 
 
 def _session(store: SqlAlchemyStore) -> AbstractContextManager[Session]:
@@ -150,6 +174,7 @@ def _session(store: SqlAlchemyStore) -> AbstractContextManager[Session]:
             with dataset_registry._session(store):
                 pass
             _Base.metadata.create_all(store.engine, checkfirst=True)
+            _ensure_indexes(store.engine)
             _initialized_engines.add(store.engine)
     return store.ManagedSessionMaker()
 
@@ -200,223 +225,83 @@ def _validate_artifact_path(value: str | None, field: str) -> None:
         )
 
 
-def validate_dataset_version(
-    store: SqlAlchemyStore, name: str, version: str
-) -> dict[str, Any]:
-    """Require a currently known or historically recorded dataset identity.
-
-    Args:
-        store: The tracking server's SQL store.
-        name: Exact dataset name.
-        version: Exact version of that dataset.
-
-    Returns:
-        Evidence identifying the catalog or historical input that matched.
-
-    Raises:
-        MlflowException: If the name and version cannot be verified.
-    """
-    versions = dataset_registry.list_dataset_versions(store, name)
-    if any(row["version"] == version for row in versions):
-        return {"source": "dataset_release", "name": name, "version": version}
-    changes = dataset_registry.list_dataset_changelogs(store).get(name, [])
-    if any(version in change for change in changes):
-        return {"source": "dataset_changelog", "name": name, "version": version}
-
-    # Native dataset inputs preserve historical identities, including deleted runs.
-    with _session(store) as session:
-        context = aliased(SqlInputTag)
-        evaluation_context = sqlalchemy.exists().where(
-            context.input_uuid == SqlInput.input_uuid,
-            context.name == "mlflow.data.context",
-            context.value == "evaluation",
-        )
-        native = session.execute(
-            sqlalchemy.select(SqlDataset.dataset_uuid, SqlInput.destination_id)
-            .join(SqlInput, SqlInput.source_id == SqlDataset.dataset_uuid)
-            .join(SqlInputTag, SqlInputTag.input_uuid == SqlInput.input_uuid)
-            .where(
-                SqlDataset.name == name,
-                SqlInput.source_type == "DATASET",
-                SqlInput.destination_type == "RUN",
-                sqlalchemy.or_(
-                    SqlInputTag.name == "version",
-                    sqlalchemy.and_(
-                        SqlInputTag.name == "test_version", evaluation_context
-                    ),
-                ),
-                SqlInputTag.value == version,
-            )
-            .order_by(SqlDataset.dataset_uuid, SqlInput.destination_id)
-            .limit(1)
-        ).first()
-        if native is not None:
-            return {
-                "source": "mlflow_dataset_input",
-                "name": name,
-                "version": version,
-                "dataset_id": native.dataset_uuid,
-                "run_id": native.destination_id,
-            }
-        previous = session.execute(
-            sqlalchemy.select(SqlEvaluation)
-            .where(
-                SqlEvaluation.dataset_name == name,
-                SqlEvaluation.dataset_version == version,
-                SqlEvaluation.association_status == "confirmed",
-            )
-            .limit(1)
-        ).scalar_one_or_none()
-        if previous is not None:
-            evidence = json.loads(previous.metadata_json).get("dataset_identity")
-            if evidence:
-                return evidence
-
-    # The dataset module owns metadata access and its interpretation.
-    from mlflow.deeplore.dataset_api import build_dataset_summary, find_dataset
-    from mlflow.deeplore.dataset_release import parse_changelog
-
-    try:
-        dataset = find_dataset(name)
-    except MlflowException as error:
-        if error.error_code != "RESOURCE_DOES_NOT_EXIST":
-            raise
-        raise _invalid(f"unknown dataset name/version: {name!r} {version!r}") from error
-    summary = build_dataset_summary(dataset, [])
-    metadata = summary.get("metadata") or {}
-    try:
-        changes = parse_changelog(metadata.get("changelog"))
-    except ValueError as error:
-        raise _invalid(f"dataset {name!r} has an invalid changelog: {error}") from error
-    if version != metadata.get("version") and version not in changes:
-        raise _invalid(f"unknown dataset name/version: {name!r} {version!r}")
-    if changes:
-        dataset_registry.register_dataset_changelog(
-            store, name, [{key: value} for key, value in changes.items()]
-        )
-    return {
-        "source": (
-            "dataset_current"
-            if version == metadata.get("version")
-            else "dataset_changelog"
-        ),
-        "name": name,
-        "version": version,
-    }
-
-
 def validate_dataset_test(
     store: SqlAlchemyStore,
     name: str,
     version: str,
-    test_hash: str | None,
+    dataset_hash: str,
 ) -> dict[str, Any]:
-    """Verify that a dataset version used the requested test content hash.
+    """Require a registered dataset version whose test split has the given hash.
+
+    The registry is the only evidence: a version it does not hold was never
+    released, whatever a working tree or an earlier run claims.
 
     Args:
         store: The tracking server's SQL store.
         name: Dataset name.
         version: Dataset version.
-        test_hash: Optional observed hash to verify against the dataset version.
+        dataset_hash: Normalized hash of the test split that was evaluated.
 
     Returns:
-        Server-owned evidence for the matching identity and test content.
+        The registered dataset version.
 
     Raises:
-        MlflowException: If no current or historical evidence matches all fields.
+        MlflowException: If the dataset is archived, the version is not
+            registered or has no test split, or the hash differs.
     """
-    validate_dataset_version(store, name, version)
-    for released in dataset_registry.list_dataset_versions(store, name):
-        if released["version"] != version:
-            continue
-        content_hash = released["hashes"].get("test")
-        if (
-            not isinstance(content_hash, str)
-            or re.fullmatch(r"[0-9a-fA-F]{32}(?:\.dir)?", content_hash) is None
-        ):
-            raise _invalid(
-                f"dataset {name!r} {version!r} has no registered test content"
-            )
-        if test_hash is not None and content_hash.lower() != test_hash:
-            raise _invalid(
-                "test_hash does not match the registered test content for "
-                f"dataset {name!r} {version!r}: expected {content_hash.lower()!r}"
-            )
-        return {
-            "source": (
-                "dataset_release" if released["git_commit"] else "dataset_history"
-            ),
-            "name": name,
-            "version": version,
-            "test_hash": content_hash.lower(),
-        }
-    if test_hash is None:
-        raise _invalid(
-            "dataset version must have registered test content before evaluation"
-        )
-    with _session(store) as session:
-        context = aliased(SqlInputTag)
-        split = aliased(SqlInputTag)
-        native = session.execute(
-            sqlalchemy.select(SqlDataset.dataset_uuid, SqlInput.destination_id)
-            .join(SqlInput, SqlInput.source_id == SqlDataset.dataset_uuid)
-            .join(SqlInputTag, SqlInputTag.input_uuid == SqlInput.input_uuid)
-            .join(context, context.input_uuid == SqlInput.input_uuid)
-            .join(split, split.input_uuid == SqlInput.input_uuid)
-            .where(
-                SqlDataset.name == name,
-                SqlInput.source_type == "DATASET",
-                SqlInput.destination_type == "RUN",
-                SqlInputTag.name.in_(("version", "test_version")),
-                SqlInputTag.value == version,
-                context.name == "mlflow.data.context",
-                context.value == "evaluation",
-                split.name == "split_md5",
-                sqlalchemy.func.lower(split.value) == test_hash,
-            )
-            .order_by(SqlDataset.dataset_uuid, SqlInput.destination_id)
-            .limit(1)
-        ).first()
-    if native is not None:
-        dataset_registry.register_historical_dataset_version(
-            store, name, version, test_hash
-        )
-        return {
-            "source": "mlflow_dataset_input",
-            "name": name,
-            "version": version,
-            "test_hash": test_hash,
-            "dataset_id": native.dataset_uuid,
-            "run_id": native.destination_id,
-        }
-
-    from mlflow.deeplore.dataset_api import build_dataset_summary, find_dataset
-    from mlflow.deeplore.dataset_release import parse_hashes
-
-    try:
-        metadata = build_dataset_summary(find_dataset(name), []).get("metadata") or {}
-    except MlflowException as error:
-        if error.error_code != "RESOURCE_DOES_NOT_EXIST":
-            raise
-        metadata = {}
-    content_hash = parse_hashes(metadata).get("test")
-    if (
-        metadata.get("version") == version
-        and isinstance(content_hash, str)
-        and content_hash.lower() == test_hash
-    ):
-        dataset_registry.register_historical_dataset_version(
-            store, name, version, test_hash
-        )
-        return {
-            "source": "dataset_current",
-            "name": name,
-            "version": version,
-            "test_hash": test_hash,
-        }
-    raise _invalid(
-        f"test_hash does not match known test content for dataset {name!r} {version!r}"
+    entry = dataset_registry.get_dataset(store, name)
+    if entry and entry["archived"]:
+        raise _invalid(f"dataset {name!r} is archived and cannot be evaluated on")
+    released = next(
+        (
+            row
+            for row in dataset_registry.list_dataset_versions(store, name)
+            if row["version"] == version
+        ),
+        None,
     )
+    if released is None:
+        raise _invalid(f"dataset {name!r} {version!r} is not registered in MLflow")
+    content_hash = released["hashes"].get("test")
+    if (
+        not isinstance(content_hash, str)
+        or re.fullmatch(r"[0-9a-fA-F]{32}(?:\.dir)?", content_hash) is None
+    ):
+        raise _invalid(f"dataset {name!r} {version!r} has no test split")
+    if content_hash.lower() != dataset_hash:
+        raise _invalid(
+            "dataset_hash does not match the registered test hash of dataset "
+            f"{name!r} {version!r}: expected {content_hash.lower()!r}"
+        )
+    return released
+
+
+def validate_metrics(released: dict[str, Any], metrics: dict[str, Any]) -> None:
+    """Require every metric the dataset version declares.
+
+    A declared name is recorded by a metric of that name or by a family of
+    ``<name>/<member>`` metrics, e.g. ``per_class_AP/<category>``.
+
+    Args:
+        released: The registered dataset version.
+        metrics: The evaluation's metrics.
+
+    Raises:
+        MlflowException: If a declared metric is absent.
+    """
+    declared = released["metadata"].get("metrics") or []
+    missing = [
+        name
+        for name in declared
+        if isinstance(name, str)
+        and name not in metrics
+        and not any(key.startswith(f"{name}/") for key in metrics)
+    ]
+    if missing:
+        raise _invalid(
+            f"metrics lack {', '.join(missing)}, which dataset {released['name']!r} "
+            f"{released['version']!r} requires"
+        )
 
 
 def _validate_record(record: dict[str, Any]) -> dict[str, Any]:
@@ -428,28 +313,23 @@ def _validate_record(record: dict[str, Any]) -> dict[str, Any]:
     fields["association_status"] = "confirmed"
     fields["benchmark_name"] = fields["dataset_name"]
     for key, pattern, limit in (
-        ("test_hash", r"[0-9a-fA-F]{32}(?:\.dir)?", 36),
-        ("ckpt_hash", r"[0-9a-fA-F]{32}", 32),
+        ("dataset_hash", r"[0-9a-fA-F]{32}(?:\.dir)?", 36),
+        ("model_hash", r"[0-9a-fA-F]{32}", 32),
     ):
-        value = _validate_text(record, key, limit, key != "test_hash")
-        if value is None:
-            fields[key] = None
-            continue
+        value = _validate_text(record, key, limit, True)
         if re.fullmatch(pattern, value) is None:
-            suffix = ", optionally .dir" if key == "test_hash" else ""
+            suffix = ", optionally .dir" if key == "dataset_hash" else ""
             raise _invalid(f"{key} must be a complete hexadecimal MD5 digest{suffix}")
         fields[key] = value.lower()
-    fields["ckpt_path"] = _validate_text(record, "ckpt_path", 1024, True)
-    _validate_artifact_path(fields["ckpt_path"], "ckpt_path")
+    fields["model_path"] = _validate_text(record, "model_path", 1024, True)
+    _validate_artifact_path(fields["model_path"], "model_path")
 
-    evaluated_at = record.get("evaluated_at")
-    if evaluated_at is not None and (type(evaluated_at) is not int or evaluated_at < 0):
+    evaluation_time = record.get("evaluation_time")
+    if type(evaluation_time) is not int or evaluation_time < 0:
         raise _invalid(
-            "evaluated_at must be a nonnegative Unix timestamp in milliseconds"
+            "evaluation_time must be a nonnegative Unix timestamp in milliseconds"
         )
-    if evaluated_at is None:
-        raise _invalid("evaluated_at is required")
-    fields["evaluated_at"] = evaluated_at
+    fields["evaluation_time"] = evaluation_time
 
     metrics = record.get("metrics")
     if not isinstance(metrics, dict) or not metrics:
@@ -486,8 +366,13 @@ def _validate_record(record: dict[str, Any]) -> dict[str, Any]:
 
 
 def _get_matching_evaluation(
-    session: Session, run_id: str, fields: dict[str, Any], test_hash: str
+    session: Session, run_id: str, fields: dict[str, Any], dataset_hash: str
 ) -> SqlEvaluation | None:
+    """Find the run's result for this model file on this test hash.
+
+    Versions that share the test hash share the result. A result imported
+    without a model file is adopted by the first write for its test hash.
+    """
     versions = session.execute(
         sqlalchemy.select(dataset_registry.SqlDatasetVersion).where(
             dataset_registry.SqlDatasetVersion.name == fields["dataset_name"]
@@ -496,24 +381,35 @@ def _get_matching_evaluation(
     matching_versions = [
         row.version
         for row in versions
-        if (json.loads(row.hashes).get("test") or "").lower() == test_hash
+        if (json.loads(row.hashes).get("test") or "").lower() == dataset_hash
     ]
-    return session.execute(
-        sqlalchemy.select(SqlEvaluation)
-        .where(
-            SqlEvaluation.run_id == run_id,
-            SqlEvaluation.dataset_name == fields["dataset_name"],
-            SqlEvaluation.dataset_version.in_(matching_versions),
+    rows = (
+        session.execute(
+            sqlalchemy.select(SqlEvaluation)
+            .where(
+                SqlEvaluation.run_id == run_id,
+                SqlEvaluation.dataset_name == fields["dataset_name"],
+                SqlEvaluation.dataset_version.in_(matching_versions),
+                sqlalchemy.or_(
+                    SqlEvaluation.model_path == fields["model_path"],
+                    SqlEvaluation.model_path.is_(None),
+                ),
+            )
+            .order_by(SqlEvaluation.created_at, SqlEvaluation.evaluation_id)
+            .with_for_update(of=SqlEvaluation)
         )
-        .with_for_update(of=SqlEvaluation)
-    ).scalar_one_or_none()
+        .scalars()
+        .all()
+    )
+    exact = [row for row in rows if row.model_path == fields["model_path"]]
+    return (exact or rows or [None])[0]
 
 
 def _write_evaluation(
-    session: Session, run_id: str, fields: dict[str, Any], test_hash: str
+    session: Session, run_id: str, fields: dict[str, Any], dataset_hash: str
 ) -> tuple[dict[str, Any], bool, str]:
     with session.begin_nested():
-        row = _get_matching_evaluation(session, run_id, fields, test_hash)
+        row = _get_matching_evaluation(session, run_id, fields, dataset_hash)
         created = row is None
         if created:
             row = SqlEvaluation(
@@ -536,11 +432,14 @@ def create_evaluation(
     run_id: str,
     record: dict[str, Any],
 ) -> tuple[dict[str, Any], bool, str]:
-    """Replace a run's result for one dataset test hash while preserving its identity.
+    """Write a run's result for one model file on one dataset test hash.
+
+    A result for the same run, model file, dataset and test hash is replaced
+    in place and keeps its ``evaluation_id``.
 
     Args:
         store: The tracking server's SQL store.
-        run_id: Run that owns the evaluated checkpoint.
+        run_id: Run that owns the evaluated model file.
         record: Complete evaluation identity, metrics and parameters.
 
     Returns:
@@ -551,13 +450,16 @@ def create_evaluation(
     """
     fields = _validate_record(record)
     store.get_run(run_id)
-    evidence = validate_dataset_test(
-        store,
-        fields["dataset_name"],
-        fields["dataset_version"],
-        fields.pop("test_hash"),
+    dataset_hash = fields.pop("dataset_hash")
+    released = validate_dataset_test(
+        store, fields["dataset_name"], fields["dataset_version"], dataset_hash
     )
-    test_hash = evidence.pop("test_hash")
+    validate_metrics(released, record["metrics"])
+    evidence = {
+        "source": "dataset_release" if released["git_commit"] else "dataset_history",
+        "name": released["name"],
+        "version": released["version"],
+    }
     fields["metadata_json"] = _validate_json(
         {"dataset_identity": evidence}, "dataset identity"
     )
@@ -572,9 +474,9 @@ def create_evaluation(
                 .with_for_update()
             ).scalar_one()
         try:
-            return _write_evaluation(session, run_id, fields, test_hash)
+            return _write_evaluation(session, run_id, fields, dataset_hash)
         except sqlalchemy.exc.IntegrityError:
-            return _write_evaluation(session, run_id, fields, test_hash)
+            return _write_evaluation(session, run_id, fields, dataset_hash)
 
 
 def list_evaluations(store: SqlAlchemyStore, run_id: str) -> list[dict[str, Any]]:
@@ -593,8 +495,8 @@ def list_evaluations(store: SqlAlchemyStore, run_id: str) -> list[dict[str, Any]
             sqlalchemy.select(SqlEvaluation)
             .where(SqlEvaluation.run_id == run_id)
             .order_by(
-                sqlalchemy.case((SqlEvaluation.evaluated_at.is_(None), 1), else_=0),
-                SqlEvaluation.evaluated_at.desc(),
+                sqlalchemy.case((SqlEvaluation.evaluation_time.is_(None), 1), else_=0),
+                SqlEvaluation.evaluation_time.desc(),
                 SqlEvaluation.created_at.desc(),
                 SqlEvaluation.evaluation_id,
             )

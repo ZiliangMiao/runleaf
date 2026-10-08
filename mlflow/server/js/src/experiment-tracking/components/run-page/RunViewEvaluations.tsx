@@ -30,9 +30,9 @@ interface RunEvaluation {
   association_status: 'confirmed' | 'pending';
   dataset_name: string | null;
   dataset_version: string | null;
-  ckpt_path: string | null;
-  ckpt_hash: string | null;
-  evaluated_at: number | null;
+  model_path: string | null;
+  model_hash: string | null;
+  evaluation_time: number | null;
   metrics: Record<string, number | null>;
   params: Record<string, string | number | boolean | null>;
   created_at: number;
@@ -75,7 +75,7 @@ const EvaluationRow = ({
   label,
   children,
 }: {
-  label: 'evaluation' | 'dataset' | 'checkpoint';
+  label: 'evaluation' | 'dataset' | 'model';
   children: React.ReactNode;
 }) => {
   const { theme } = useDesignSystemTheme();
@@ -213,7 +213,7 @@ const EvaluationRecord = ({
       <EvaluationRow label="evaluation">
         <EvaluationField label="id">{evaluation.evaluation_id}</EvaluationField>
         <EvaluationField label="time">
-          {evaluation.evaluated_at === null ? null : formatEvaluationTime(evaluation.evaluated_at)}
+          {evaluation.evaluation_time === null ? null : formatEvaluationTime(evaluation.evaluation_time)}
         </EvaluationField>
       </EvaluationRow>
       <EvaluationRow label="dataset">
@@ -256,13 +256,13 @@ const EvaluationRecord = ({
           )}
         </div>
       </EvaluationRow>
-      <EvaluationRow label="checkpoint">
+      <EvaluationRow label="model">
         <EvaluationField label="path">
-          {evaluation.ckpt_path ? (
-            <EvaluationArtifactLink experimentId={experimentId} runUuid={runUuid} artifactPath={evaluation.ckpt_path} />
+          {evaluation.model_path ? (
+            <EvaluationArtifactLink experimentId={experimentId} runUuid={runUuid} artifactPath={evaluation.model_path} />
           ) : null}
         </EvaluationField>
-        <EvaluationField label="hash">{evaluation.ckpt_hash}</EvaluationField>
+        <EvaluationField label="hash">{evaluation.model_hash}</EvaluationField>
       </EvaluationRow>
       <EvaluationValues label="params" values={evaluation.params} />
       <EvaluationValues label="metrics" values={evaluation.metrics} />
@@ -282,7 +282,7 @@ export const RunViewEvaluations = ({ experimentId, runUuid }: { experimentId: st
   );
   const records = [...(evaluations.data ?? [])].sort(
     (left, right) =>
-      (right.evaluated_at ?? -Infinity) - (left.evaluated_at ?? -Infinity) || right.created_at - left.created_at,
+      (right.evaluation_time ?? -Infinity) - (left.evaluation_time ?? -Infinity) || right.created_at - left.created_at,
   );
   const datasetGroups = new Map<string | null, RunEvaluation[]>();
   for (const evaluation of records) {
