@@ -17,18 +17,23 @@ Samples reference outside files by dataset-root-relative POSIX paths: any JSON
 string in a sample file that starts with ``assets/`` or ``annotations/`` is a
 dependency that the split's ``_reference.json`` must list.
 
-A release runs steps 2-8 (step 1 is the caller supplying ``version`` and
-``change``):
+A release runs steps 2-8 (step 1 is the caller supplying ``version``,
+``change`` and the units to delete):
 
     2 check      nothing is modified
-    3 dvc add    one unit per existing directory; a removed unit loses its pointer
+    3 dvc add    one unit per existing directory; a deleted unit loses its pointer
     4 metadata   version, changelog entry and split hashes into metadata.yaml
     5 git add    only metadata.yaml, .dvc pointers and DVC's .gitignore files
     6 commit     ``dataset(<name>): release <version>, <change>`` plus an annotated tag
     7 push       ``dvc push`` first, then an atomic ``git push`` of branch and tag
     8 register   metadata read back from the tag's commit goes to MLflow
 
-A failure in steps 3-6 restores ``metadata.yaml`` and the index. A failure in
+A unit (``assets``, ``annotations`` or a split) is deleted only when the
+caller lists it: a directory that is merely absent, e.g. in a clone that never
+ran ``dvc pull``, fails the check instead of dropping its pointer.
+
+A failure in steps 3-6 rolls everything back: the tag, the commit,
+``metadata.yaml``, the pointers and DVC's ``.gitignore`` files. A failure in
 steps 7-8 leaves the local commit and tag in place; releasing the same version
 again resumes at step 7.
 
@@ -36,10 +41,11 @@ Sections:
 - Layout: paths of a dataset's release units.
 - Metadata: ``metadata.yaml`` and ``.dvc`` pointer IO.
 - Version: format and succession rules.
-- Samples: sample files, ``_reference.json`` and dependency discovery.
+- Samples: sample files, ``_reference.json``, dependency discovery and hashes.
 - Commands: git and dvc subprocesses.
 - Checks: step 2.
 - Release: steps 3-8.
+- Archive: remove or restore a whole dataset directory.
 - CLI.
 
 Verb paradigm:
@@ -56,10 +62,13 @@ Verb paradigm:
 
 import argparse
 import fcntl
+import getpass
 import hashlib
+import itertools
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import urllib.error
@@ -68,7 +77,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional, Sequence
 
 import yaml
 
@@ -80,6 +89,8 @@ ASSETS_DIR = "assets"
 ANNOTATIONS_DIR = "annotations"
 SAMPLES_DIR = "samples"
 SPLITS: tuple[str, ...] = ("train", "val", "test")
+UNITS: tuple[str, ...] = (ASSETS_DIR, ANNOTATIONS_DIR, *SPLITS)
+NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]*$")
 SAMPLE_FILE = "data.json"
 SHARD_PATTERN = re.compile(r"^shard_(\d+)\.json$")
 REFERENCE_FILE = "_reference.json"
@@ -116,14 +127,14 @@ class Dataset:
         """One split's samples directory."""
         return self.root / SAMPLES_DIR / split
 
+    def unit_dir(self, unit: str) -> Path:
+        """One release unit's directory: assets, annotations or a split."""
+        return self.split_dir(unit) if unit in SPLITS else self.root / unit
+
     @property
     def unit_dirs(self) -> list[Path]:
         """Every directory the layout tracks with DVC, existing or not."""
-        return [
-            self.root / ASSETS_DIR,
-            self.root / ANNOTATIONS_DIR,
-            *(self.split_dir(split) for split in SPLITS),
-        ]
+        return [self.unit_dir(unit) for unit in UNITS]
 
     def tag(self, version: str) -> str:
         """The git tag of one released version (``<name>-<version>``)."""
@@ -191,6 +202,10 @@ _MetadataDumper.add_representer(
 )
 
 
+# ``root`` was an absolute path; the directory follows from the repo and ``name``.
+RETIRED_FIELDS: frozenset[str] = frozenset({"primary_metric", "taxonomy", "root"})
+
+
 def build_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     """Return dataset metadata without retired descriptive fields.
 
@@ -200,8 +215,27 @@ def build_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     Returns:
         A new mapping preserving supported fields and historical change text.
     """
+    return {key: value for key, value in metadata.items() if key not in RETIRED_FIELDS}
+
+
+def build_metadata_template(name: str, source: str, metrics: list[str]) -> dict[str, Any]:
+    """Return the ``metadata.yaml`` content of a dataset that was never released.
+
+    Args:
+        name: Dataset name, the directory under ``data/``.
+        source: Where the data comes from.
+        metrics: Metric names every evaluation on this dataset must record.
+
+    Returns:
+        Metadata with a null version, null split hashes and an empty changelog.
+    """
     return {
-        key: value for key, value in metadata.items() if key not in {"primary_metric", "taxonomy"}
+        "name": name,
+        "source": source,
+        "version": None,
+        "hashes": dict.fromkeys(SPLITS),
+        "metrics": list(metrics),
+        "changelog": [],
     }
 
 
@@ -321,15 +355,20 @@ def build_released_metadata(
     return {
         **build_metadata(metadata),
         "version": version,
-        "hashes": [{split: hashes.get(split)} for split in SPLITS],
+        "hashes": {split: hashes.get(split) for split in SPLITS},
         "changelog": [*(metadata.get("changelog") or []), {version: change}],
     }
 
 
 def parse_hashes(metadata: dict) -> dict[str, Optional[str]]:
-    """Flatten a metadata mapping's ``hashes`` list into split -> hash."""
+    """Read a metadata mapping's ``hashes`` as split -> hash.
+
+    Accepts the mapping form and the list of single-split mappings that
+    metadata written before the mapping form carries.
+    """
     hashes: dict[str, Optional[str]] = dict.fromkeys(SPLITS)
-    for entry in metadata.get("hashes") or []:
+    recorded = metadata.get("hashes") or {}
+    for entry in [recorded] if isinstance(recorded, dict) else recorded:
         if isinstance(entry, dict):
             hashes.update({str(split): value for split, value in entry.items()})
     return hashes
@@ -338,6 +377,7 @@ def parse_hashes(metadata: dict) -> dict[str, Optional[str]]:
 # ===== Version: format and succession rules =====
 
 VERSION_PATTERN = re.compile(r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+FIRST_VERSION = "v1.0.0"
 
 
 def parse_version(version: str) -> tuple[int, int, int]:
@@ -399,9 +439,12 @@ def build_next_versions(current: Optional[str]) -> list[str]:
         current: The latest released version, or ``None`` before the first release.
 
     Returns:
-        The patch, minor and major successors, in that order.
+        The patch, minor and major successors, in that order; only ``v1.0.0``
+        before the first release.
     """
-    major, minor, patch = parse_version(current) if current else (0, 0, 0)
+    if not current:
+        return [FIRST_VERSION]
+    major, minor, patch = parse_version(current)
     return [f"v{major}.{minor}.{patch + 1}", f"v{major}.{minor + 1}.0", f"v{major + 1}.0.0"]
 
 
@@ -530,6 +573,31 @@ def build_md5(path: Path) -> str:
     return digest.hexdigest()
 
 
+def build_dir_md5(directory: Path) -> str:
+    """Return a directory's hash as DVC 3 records it in ``outs[0].md5``.
+
+    Every file below the directory becomes ``{"md5", "relpath"}``; the list
+    sorted by ``relpath`` is dumped with ``json.dumps(..., sort_keys=True)``
+    and hashed. Verifiers use the same definition without installing DVC.
+
+    Args:
+        directory: A split's samples directory.
+
+    Returns:
+        The hex md5 of the listing plus the ``.dir`` suffix.
+    """
+    entries = sorted(
+        (
+            {"md5": build_md5(path), "relpath": path.relative_to(directory).as_posix()}
+            for path in directory.rglob("*")
+            if path.is_file()
+        ),
+        key=lambda entry: entry["relpath"],
+    )
+    listing = json.dumps(entries, sort_keys=True).encode("utf-8")
+    return hashlib.md5(listing, usedforsecurity=False).hexdigest() + ".dir"
+
+
 # ===== Commands: git and dvc subprocesses =====
 
 Log = Callable[[str], None]
@@ -606,7 +674,8 @@ class Finding:
 
     Attributes:
         level: ``error`` blocks the release; ``warning`` is shown and passed over.
-        check: The check that produced it: version, git, layout, samples or reference.
+        check: The check that produced it: version, git, layout, samples, reference
+            or overlap.
         message: What is wrong and, where possible, how to fix it.
     """
 
@@ -642,18 +711,20 @@ def check_version(
     metadata: dict,
     version: str,
     registered_versions: list[str],
+    log: Log,
 ) -> list[Finding]:
     """Check the version is well-formed, unused and the direct successor.
 
-    "Unused" is judged from local records only -- ``metadata.yaml``, the MLflow
-    registry and the repository's local tags -- so a check never needs the git
-    remote. A tag that exists only on the remote surfaces at the push in step 7.
+    "Unused" covers ``metadata.yaml``, the MLflow registry and the git tags of
+    the repository and of its remote. The working tree must sit on the latest
+    registered version, so a release that never got registered blocks the next.
 
     Args:
         dataset: The dataset being released.
         metadata: Its current metadata mapping.
         version: The requested version.
         registered_versions: Versions MLflow already holds for this dataset.
+        log: Receives git command output.
 
     Returns:
         Findings; empty when the version may be released.
@@ -664,7 +735,7 @@ def check_version(
         return [Finding(LEVEL_ERROR, "version", str(error))]
 
     findings: list[Finding] = []
-    current = metadata.get("version")
+    current = str(metadata["version"]) if metadata.get("version") else None
     changelog_versions = parse_changelog_versions(metadata)
     tag = dataset.tag(version)
     if version in changelog_versions or version == current:
@@ -675,18 +746,38 @@ def check_version(
         )
     if _succeeds(dataset.repo, "rev-parse", "-q", "--verify", f"refs/tags/{tag}"):
         findings.append(Finding(LEVEL_ERROR, "version", f"git tag {tag} already exists"))
+    try:
+        if run_git(dataset.repo, "ls-remote", "--tags", "origin", f"refs/tags/{tag}", log=log):
+            findings.append(
+                Finding(LEVEL_ERROR, "version", f"git tag {tag} already exists on origin")
+            )
+    except ReleaseError as error:
+        findings.append(
+            Finding(LEVEL_ERROR, "version", f"cannot read the tags of origin: {error}")
+        )
 
     try:
         latest = max(changelog_versions, key=parse_version) if changelog_versions else None
-        allowed = build_next_versions(str(current) if current else None)
+        registered = max(registered_versions, key=parse_version) if registered_versions else None
+        allowed = build_next_versions(current)
     except ValueError as error:
         return [*findings, Finding(LEVEL_ERROR, "version", f"{METADATA_FILE}: {error}")]
-    if latest != (str(current) if current else None):
+    if latest != current:
         findings.append(
             Finding(
                 LEVEL_ERROR,
                 "version",
                 f"{METADATA_FILE} version {current} is not its latest changelog entry {latest}",
+            )
+        )
+    if registered != current:
+        findings.append(
+            Finding(
+                LEVEL_ERROR,
+                "version",
+                f"{METADATA_FILE} is at {current or 'no release'} but the latest version "
+                f"registered in MLflow is {registered or 'none'}; finish the previous release "
+                "or pull the repository first",
             )
         )
     if version not in allowed:
@@ -701,6 +792,20 @@ def check_version(
     return findings
 
 
+def _find_remote_head(repo: Path, log: Log) -> tuple[Optional[str], Optional[str]]:
+    """Return origin's default branch and the commit it points at, without fetching."""
+    branch = commit = None
+    for line in run_git(repo, "ls-remote", "--symref", "origin", "HEAD", log=log).splitlines():
+        target, _, name = line.partition("\t")
+        if name != "HEAD":
+            continue
+        if target.startswith("ref: refs/heads/"):
+            branch = target.removeprefix("ref: refs/heads/")
+        else:
+            commit = target
+    return branch, commit
+
+
 def check_repository(dataset: Dataset, log: Log) -> list[Finding]:
     """Check the repository can take the release commit and push it.
 
@@ -709,38 +814,75 @@ def check_repository(dataset: Dataset, log: Log) -> list[Finding]:
         log: Receives git command output.
 
     Returns:
-        Findings about the branch, the DVC setup and the staging area.
+        Findings about the DVC setup, the branch and uncommitted changes.
     """
     findings: list[Finding] = []
     if not (dataset.repo / ".dvc").is_dir():
         findings.append(Finding(LEVEL_ERROR, "git", f"{dataset.repo} is not a DVC repository"))
-    if not _succeeds(dataset.repo, "symbolic-ref", "-q", "HEAD"):
+    try:
+        branch = run_git(
+            dataset.repo, "symbolic-ref", "-q", "--short", "HEAD", log=lambda line: None
+        )
+    except ReleaseError:
+        branch = None
         findings.append(
             Finding(LEVEL_ERROR, "git", "HEAD is detached; check out a branch to release from")
         )
-    staged = run_git(dataset.repo, "diff", "--cached", "--name-only", log=log).splitlines()
-    foreign = [path for path in staged if not _is_release_path(dataset, path)]
+    try:
+        default_branch, remote_commit = _find_remote_head(dataset.repo, log)
+    except ReleaseError as error:
+        findings.append(Finding(LEVEL_ERROR, "git", f"cannot reach origin: {error}"))
+    else:
+        if branch and default_branch and branch != default_branch:
+            findings.append(
+                Finding(
+                    LEVEL_ERROR,
+                    "git",
+                    f"releases run on the default branch {default_branch}, not on {branch}",
+                )
+            )
+        # A commit this clone lacks, or one HEAD does not contain, means origin moved on.
+        if remote_commit and not _succeeds(
+            dataset.repo, "merge-base", "--is-ancestor", remote_commit, "HEAD"
+        ):
+            findings.append(
+                Finding(LEVEL_ERROR, "git", "the branch is behind origin; pull before releasing")
+            )
+
+    # The second diff catches a change staged and then reverted in the working tree.
+    changed = {
+        path
+        for arguments in (("diff", "--name-only", "HEAD"), ("diff", "--cached", "--name-only"))
+        for path in run_git(dataset.repo, *arguments, log=log).splitlines()
+    }
+    foreign = sorted(path for path in changed if not _is_release_path(dataset, path))
     if foreign:
         findings.append(
             Finding(
                 LEVEL_ERROR,
                 "git",
-                f"the staging area holds {len(foreign)} change(s) outside this release, e.g. "
-                f"{', '.join(foreign[:5])}; commit or unstage them first",
+                f"{len(foreign)} tracked file(s) outside this release have uncommitted changes, "
+                f"e.g. {', '.join(foreign[:5])}; commit or revert them first",
             )
         )
     return findings
 
 
-def check_layout(dataset: Dataset, metadata: dict) -> list[Finding]:
-    """Check which release units exist and report the ones that are missing.
+def check_layout(
+    dataset: Dataset, metadata: dict, version: str, deletions: Sequence[str]
+) -> list[Finding]:
+    """Check which release units exist and that every absence is intended.
 
     Args:
         dataset: The dataset being released.
         metadata: Its current metadata mapping.
+        version: The requested version.
+        deletions: Units the caller asked to delete with this release.
 
     Returns:
-        An error for a wrong ``name``, warnings for absent optional units.
+        Errors for a wrong ``name``, an absence that disagrees with the
+        deletion list and a split deleted without a Major version; warnings
+        for units that were never part of the dataset.
     """
     findings: list[Finding] = []
     if metadata.get("name") != dataset.name:
@@ -752,16 +894,54 @@ def check_layout(dataset: Dataset, metadata: dict) -> list[Finding]:
                 f"directory {dataset.name!r}",
             )
         )
-    for unit_dir in dataset.unit_dirs:
-        if unit_dir.is_dir():
-            continue
-        relative = unit_dir.relative_to(dataset.root).as_posix()
-        note = (
-            "its .dvc pointer will be removed"
-            if pointer_path(unit_dir).is_file()
-            else "it is not part of this release"
+    unknown = sorted(set(deletions) - set(UNITS))
+    if unknown:
+        findings.append(
+            Finding(
+                LEVEL_ERROR,
+                "layout",
+                f"the deletion list names {unknown}; it may only hold {', '.join(UNITS)}",
+            )
         )
-        findings.append(Finding(LEVEL_WARNING, "layout", f"{relative}/ is missing; {note}"))
+    for unit in UNITS:
+        unit_dir = dataset.unit_dir(unit)
+        relative = unit_dir.relative_to(dataset.root).as_posix()
+        released = pointer_path(unit_dir).is_file()
+        if unit in deletions:
+            if unit_dir.is_dir():
+                message = f"{relative}/ is in the deletion list but still exists; remove it first"
+            elif not released:
+                message = f"{relative}/ is in the deletion list but was never released"
+            else:
+                continue
+            findings.append(Finding(LEVEL_ERROR, "layout", message))
+        elif not unit_dir.is_dir():
+            if released:
+                findings.append(
+                    Finding(
+                        LEVEL_ERROR,
+                        "layout",
+                        f"{relative}/ is missing but not in the deletion list; run `dvc pull` "
+                        "to restore it or list it for deletion",
+                    )
+                )
+            else:
+                findings.append(
+                    Finding(
+                        LEVEL_WARNING,
+                        "layout",
+                        f"{relative}/ is missing; it is not part of this release",
+                    )
+                )
+    deleted_splits = sorted(set(deletions) & set(SPLITS))
+    if deleted_splits and VERSION_PATTERN.match(version) and parse_version(version)[1:] != (0, 0):
+        findings.append(
+            Finding(
+                LEVEL_ERROR,
+                "layout",
+                f"deleting {', '.join(deleted_splits)} needs a Major version, not {version}",
+            )
+        )
     if not any(dataset.split_dir(split).is_dir() for split in SPLITS):
         findings.append(
             Finding(
@@ -788,8 +968,8 @@ def check_split(dataset: Dataset, split: str) -> list[Finding]:
     """Check one split's generated files against the data they read.
 
     Verifies the sample files and ``_reference.json`` exist and are well-formed,
-    every referenced file exists with the recorded digest, and every outside
-    file the samples read is listed.
+    every referenced file exists with the recorded digest, and the listed
+    files are exactly the outside files the samples read.
 
     Args:
         dataset: The dataset being released.
@@ -845,6 +1025,55 @@ def check_split(dataset: Dataset, split: str) -> list[Finding]:
                 f"{', '.join(uncovered[:3])}; rerun the build script",
             )
         )
+    # An extra entry would let an unrelated file change this split's hash.
+    unread = sorted(set(reference) - dependencies)
+    if unread:
+        findings.append(
+            Finding(
+                LEVEL_ERROR,
+                "reference",
+                f"{split}: {REFERENCE_FILE} lists {len(unread)} file(s) the samples do not read, "
+                f"e.g. {', '.join(unread[:3])}; rerun the build script",
+            )
+        )
+    return findings
+
+
+def check_split_overlap(dataset: Dataset, splits: list[str]) -> list[Finding]:
+    """Check no two splits reference the same file, by path or by content.
+
+    Args:
+        dataset: The dataset being released.
+        splits: The splits whose directories exist.
+
+    Returns:
+        One error per pair of splits that share referenced files.
+    """
+    references: dict[str, dict[str, str]] = {}
+    for split in splits:
+        try:
+            references[split] = read_reference(dataset.split_dir(split))
+        except ReleaseError:
+            # check_split already reported the unreadable reference.
+            continue
+
+    findings: list[Finding] = []
+    for first, second in itertools.combinations(references, 2):
+        paths = sorted(set(references[first]) & set(references[second]))
+        digests = set(references[first].values()) & set(references[second].values())
+        if not paths and not digests:
+            continue
+        examples = paths or sorted(
+            path for path, digest in references[first].items() if digest in digests
+        )
+        findings.append(
+            Finding(
+                LEVEL_ERROR,
+                "overlap",
+                f"{first} and {second} share {len(paths)} referenced path(s) and "
+                f"{len(digests)} file content(s), e.g. {', '.join(examples[:3])}",
+            )
+        )
     return findings
 
 
@@ -854,6 +1083,8 @@ def check_release(
     change: str,
     registered_versions: list[str],
     log: Log,
+    deletions: Sequence[str] = (),
+    archived: bool = False,
 ) -> list[Finding]:
     """Run every pre-release check without modifying the repository.
 
@@ -863,6 +1094,8 @@ def check_release(
         change: One-line description of what changed.
         registered_versions: Versions MLflow already holds for this dataset.
         log: Receives progress lines and git command output.
+        deletions: Units to delete with this release.
+        archived: Whether MLflow marks the dataset as archived.
 
     Returns:
         All findings, errors and warnings alike.
@@ -876,14 +1109,21 @@ def check_release(
 
     findings = [
         *check_change(change),
-        *check_version(dataset, metadata, version, registered_versions),
+        *check_version(dataset, metadata, version, registered_versions, log),
         *check_repository(dataset, log),
-        *check_layout(dataset, metadata),
+        *check_layout(dataset, metadata, version, deletions),
     ]
-    for split in SPLITS:
-        if dataset.split_dir(split).is_dir():
-            log(f"checking split {split}: sample files, references and digests")
-            findings.extend(check_split(dataset, split))
+    if archived:
+        findings.append(
+            Finding(
+                LEVEL_ERROR, "version", f"{dataset.name} is archived; unarchive it to release"
+            )
+        )
+    splits = [split for split in SPLITS if dataset.split_dir(split).is_dir()]
+    for split in splits:
+        log(f"checking split {split}: sample files, references and digests")
+        findings.extend(check_split(dataset, split))
+    findings.extend(check_split_overlap(dataset, splits))
     return findings
 
 
@@ -920,14 +1160,19 @@ def _release_lock(repo: Path) -> Iterator[None]:
         yield
 
 
-def _find_stage_paths(dataset: Dataset, log: Log) -> list[str]:
-    """List the repo-relative paths step 5 stages: existing or tracked release files."""
-    candidates = [
+def _find_release_files(dataset: Dataset) -> list[Path]:
+    """Every file a release may write: metadata, pointers and DVC's .gitignore files."""
+    return [
         dataset.metadata_path,
         *(pointer_path(unit_dir) for unit_dir in dataset.unit_dirs),
         dataset.root / ".gitignore",
         dataset.root / SAMPLES_DIR / ".gitignore",
     ]
+
+
+def _find_stage_paths(dataset: Dataset, log: Log) -> list[str]:
+    """List the repo-relative paths step 5 stages: existing or tracked release files."""
+    candidates = _find_release_files(dataset)
     relative = [dataset.relative(path) for path in candidates]
     tracked = set(run_git(dataset.repo, "ls-files", "--", *relative, log=log).splitlines())
     return [rel for rel, path in zip(relative, candidates) if path.exists() or rel in tracked]
@@ -954,11 +1199,14 @@ def _is_local_release(dataset: Dataset, version: str) -> bool:
     return tagged == head and parse_metadata(committed, tag).get("version") == version
 
 
-def release_units(dataset: Dataset, log: Log) -> dict[str, Optional[str]]:
-    """Step 3: put every existing unit into DVC and drop pointers of removed ones.
+def release_units(
+    dataset: Dataset, deletions: Sequence[str], log: Log
+) -> dict[str, Optional[str]]:
+    """Step 3: put every existing unit into DVC and drop pointers of deleted ones.
 
     Args:
         dataset: The dataset being released.
+        deletions: Units to delete; step 2 verified their directories are gone.
         log: Receives dvc command output.
 
     Returns:
@@ -966,15 +1214,12 @@ def release_units(dataset: Dataset, log: Log) -> dict[str, Optional[str]]:
         for a split that does not exist.
     """
     present = [unit_dir for unit_dir in dataset.unit_dirs if unit_dir.is_dir()]
-    removed = [
-        unit_dir
-        for unit_dir in dataset.unit_dirs
-        if not unit_dir.is_dir() and pointer_path(unit_dir).is_file()
-    ]
     if present:
         run_dvc(dataset.repo, "add", *(dataset.relative(unit_dir) for unit_dir in present), log=log)
-    for unit_dir in removed:
-        run_dvc(dataset.repo, "remove", dataset.relative(pointer_path(unit_dir)), log=log)
+    for unit in UNITS:
+        if unit in deletions:
+            pointer = pointer_path(dataset.unit_dir(unit))
+            run_dvc(dataset.repo, "remove", dataset.relative(pointer), log=log)
     return {
         split: read_pointer_md5(pointer_path(dataset.split_dir(split)))
         if dataset.split_dir(split).is_dir()
@@ -983,16 +1228,17 @@ def release_units(dataset: Dataset, log: Log) -> dict[str, Optional[str]]:
     }
 
 
-def build_record(dataset: Dataset, version: str, log: Log) -> dict:
+def build_record(dataset: Dataset, version: str, released_by: str, log: Log) -> dict:
     """Step 8 input: read the released metadata back from the tag's commit.
 
     Args:
         dataset: The released dataset.
         version: The released version.
+        released_by: System user running the release.
         log: Receives git command output.
 
     Returns:
-        The registration record: metadata fields plus the git coordinates.
+        The registration record: metadata fields, the git coordinates and the releaser.
     """
     tag = dataset.tag(version)
     committed = run_git(
@@ -1011,28 +1257,65 @@ def build_record(dataset: Dataset, version: str, log: Log) -> dict:
         "git_repo": run_git(dataset.repo, "remote", "get-url", "origin", log=log),
         "git_tag": tag,
         "git_commit": run_git(dataset.repo, "rev-parse", f"{tag}^{{commit}}", log=log),
+        "released_by": released_by,
     }
 
 
-def _release_commit(
-    dataset: Dataset, version: str, change: str, skip_hooks: bool, on_step: OnStep, log: Log
+def _release_rollback(
+    dataset: Dataset, version: str, head: str, snapshot: dict[Path, Optional[bytes]], log: Log
 ) -> None:
-    """Steps 3-6: build the local release commit and tag, or leave no trace.
+    """Undo steps 3-6: the tag, the commit and every release file.
 
-    A failure before the commit exists restores ``metadata.yaml`` and unstages
-    whatever this release staged. DVC pointers stay as written: they describe
-    the data on disk and a retry reuses them.
+    Data that ``dvc add`` moved into the cache stays there; the next release
+    reuses it.
     """
-    original_metadata = dataset.metadata_path.read_bytes()
-    staged: list[str] = []
+    tag = dataset.tag(version)
+    try:
+        # Step 2 proved the tag did not exist, so one found here is this release's.
+        if _succeeds(dataset.repo, "rev-parse", "-q", "--verify", f"refs/tags/{tag}"):
+            run_git(dataset.repo, "tag", "-d", tag, log=log)
+        # A mixed reset drops the commit and the staged files, never the data.
+        run_git(dataset.repo, "reset", "-q", head, log=log)
+    except ReleaseError as error:
+        log(f"could not undo the release commit: {error}")
+    for path, content in snapshot.items():
+        if content is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+
+
+def _release_commit(
+    dataset: Dataset,
+    version: str,
+    change: str,
+    deletions: Sequence[str],
+    skip_hooks: bool,
+    on_step: OnStep,
+    log: Log,
+) -> None:
+    """Steps 3-6: build the local release commit and tag, or leave no trace."""
+    head = run_git(dataset.repo, "rev-parse", "HEAD", log=log)
+    snapshot = {
+        path: path.read_bytes() if path.is_file() else None
+        for path in _find_release_files(dataset)
+    }
     step = 3
     try:
         on_step(3, STEP_RUNNING)
-        hashes = release_units(dataset, log)
+        hashes = release_units(dataset, deletions, log)
         on_step(3, STEP_DONE)
 
         step = 4
         on_step(4, STEP_RUNNING)
+        # Verifiers recompute this hash without DVC; both definitions must agree.
+        for split, pointer_hash in hashes.items():
+            if pointer_hash and build_dir_md5(dataset.split_dir(split)) != pointer_hash:
+                raise ReleaseError(
+                    f"{split}: the directory hash computed here differs from {pointer_hash} "
+                    "recorded by DVC; the hash definition no longer matches DVC"
+                )
         metadata = read_metadata(dataset.metadata_path)
         write_metadata(
             dataset.metadata_path, build_released_metadata(metadata, version, change, hashes)
@@ -1041,8 +1324,7 @@ def _release_commit(
 
         step = 5
         on_step(5, STEP_RUNNING)
-        staged = _find_stage_paths(dataset, log)
-        run_git(dataset.repo, "add", "-A", "--", *staged, log=log)
+        run_git(dataset.repo, "add", "-A", "--", *_find_stage_paths(dataset, log), log=log)
         foreign = [
             path
             for path in run_git(
@@ -1060,25 +1342,20 @@ def _release_commit(
         on_step(6, STEP_RUNNING)
         commit = ["commit", "-m", f"dataset({dataset.name}): release {version}, {change}"]
         run_git(dataset.repo, *commit, *(["--no-verify"] if skip_hooks else []), log=log)
+        run_git(dataset.repo, "tag", "-a", dataset.tag(version), "-m", change, log=log)
+        on_step(6, STEP_DONE)
     except Exception:
         on_step(step, STEP_FAILED)
-        dataset.metadata_path.write_bytes(original_metadata)
-        if staged:
-            try:
-                run_git(dataset.repo, "reset", "-q", "--", *staged, log=log)
-            except ReleaseError as reset_error:
-                log(f"could not unstage the release files: {reset_error}")
+        _release_rollback(dataset, version, head, snapshot, log)
         raise
 
+
+def find_system_user() -> str:
+    """Name of the system user running this process, or its uid when unnamed."""
     try:
-        run_git(dataset.repo, "tag", "-a", dataset.tag(version), "-m", change, log=log)
-    except ReleaseError as error:
-        on_step(6, STEP_FAILED)
-        raise ReleaseError(
-            f"the release commit exists but tagging failed; fix the cause, then run "
-            f"`git tag -a {dataset.tag(version)} -m <change>` and release again: {error}"
-        ) from error
-    on_step(6, STEP_DONE)
+        return getpass.getuser()
+    except (KeyError, OSError):
+        return str(os.getuid())
 
 
 def release_dataset(
@@ -1088,6 +1365,8 @@ def release_dataset(
     change: str,
     register: Register,
     registered_versions: Optional[list[str]] = None,
+    deletions: Sequence[str] = (),
+    archived: bool = False,
     dry_run: bool = False,
     skip_hooks: bool = False,
     on_step: OnStep = lambda step, status: None,
@@ -1102,6 +1381,8 @@ def release_dataset(
         change: One-line description of what changed.
         register: Receives the registration record once both pushes succeeded.
         registered_versions: Versions MLflow already holds for this dataset.
+        deletions: Units (``assets``, ``annotations`` or splits) to delete.
+        archived: Whether MLflow marks the dataset as archived.
         dry_run: Run step 2 only and return its findings.
         skip_hooks: Commit with ``--no-verify`` when the release environment
             cannot run the repository's git hooks.
@@ -1128,7 +1409,9 @@ def release_dataset(
                 on_step(step, STEP_SKIPPED)
         else:
             on_step(2, STEP_RUNNING)
-            findings = check_release(dataset, version, change, registered_versions, log)
+            findings = check_release(
+                dataset, version, change, registered_versions, log, deletions, archived
+            )
             errors = [finding for finding in findings if finding.level == LEVEL_ERROR]
             on_step(2, STEP_FAILED if errors else STEP_DONE)
             for finding in findings:
@@ -1143,7 +1426,7 @@ def release_dataset(
         if dry_run:
             return result
         if not resumed:
-            _release_commit(dataset, version, change, skip_hooks, on_step, log)
+            _release_commit(dataset, version, change, deletions, skip_hooks, on_step, log)
 
         try:
             on_step(7, STEP_RUNNING)
@@ -1168,7 +1451,7 @@ def release_dataset(
 
         try:
             on_step(8, STEP_RUNNING)
-            result["record"] = build_record(dataset, version, log)
+            result["record"] = build_record(dataset, version, find_system_user(), log)
             register(result["record"])
             on_step(8, STEP_DONE)
         except Exception as error:
@@ -1179,6 +1462,124 @@ def release_dataset(
             ) from error
         log(f"released {dataset.name} {version}")
         return result
+
+
+# ===== Archive: remove or restore a whole dataset directory =====
+
+
+def _check_archive_repository(dataset: Dataset, log: Log) -> None:
+    """Raise unless the repository can take an archive or unarchive commit."""
+    errors = [
+        finding.message
+        for finding in check_repository(dataset, log)
+        if finding.level == LEVEL_ERROR
+    ]
+    relative = dataset.relative(dataset.root)
+    own = {
+        path
+        for arguments in (("diff", "--name-only", "HEAD"), ("diff", "--cached", "--name-only"))
+        for path in run_git(dataset.repo, *arguments, "--", relative, log=log).splitlines()
+    }
+    if own:
+        errors.append(f"{relative} has uncommitted changes, e.g. {', '.join(sorted(own)[:3])}")
+    if errors:
+        raise ReleaseError("; ".join(errors))
+
+
+def release_archive(
+    repo: Path, name: str, version: str, skip_hooks: bool = False, log: Log = print
+) -> None:
+    """Archive a dataset: remove ``data/<name>/`` and push ``dataset(<name>): archive``.
+
+    Tags, registered versions and the DVC remote keep every released version.
+    The splits must still equal the released ones, so no unreleased samples
+    are discarded; ``assets/`` and ``annotations/`` are not compared.
+
+    Args:
+        repo: Root of the git + DVC repository.
+        name: Dataset name, the directory under ``data/``.
+        version: The latest registered version; the working tree must sit on it.
+        skip_hooks: Commit with ``--no-verify``.
+        log: Receives command output.
+
+    Raises:
+        ReleaseError: If the working tree is not a clean copy of ``version``
+            or a git command fails; nothing is removed then.
+    """
+    dataset = Dataset(repo.resolve(), name)
+    with _release_lock(dataset.repo):
+        metadata = read_metadata(dataset.metadata_path)
+        if metadata.get("version") != version:
+            raise ReleaseError(
+                f"{METADATA_FILE} is at {metadata.get('version')}, not at the latest registered "
+                f"version {version}; finish or pull that release first"
+            )
+        for split, released_hash in parse_hashes(metadata).items():
+            split_dir = dataset.split_dir(split)
+            if split_dir.is_dir() and build_dir_md5(split_dir) != released_hash:
+                raise ReleaseError(
+                    f"samples/{split} differs from {version}; archiving would discard it"
+                )
+        _check_archive_repository(dataset, log)
+
+        head = run_git(dataset.repo, "rev-parse", "HEAD", log=log)
+        relative = dataset.relative(dataset.root)
+        commit = ["commit", "-m", f"dataset({name}): archive"]
+        try:
+            run_git(dataset.repo, "rm", "-r", "-q", "--", relative, log=log)
+            run_git(dataset.repo, *commit, *(["--no-verify"] if skip_hooks else []), log=log)
+            run_git(dataset.repo, "push", "origin", "HEAD", log=log)
+        except ReleaseError:
+            # Nothing was published: bring the commit and the tracked files back.
+            run_git(dataset.repo, "reset", "-q", head, log=log)
+            run_git(dataset.repo, "checkout", "--", relative, log=log)
+            raise
+        # What is left is data DVC ignores; the cache and the remote keep it.
+        shutil.rmtree(dataset.root, ignore_errors=True)
+
+
+def release_unarchive(
+    repo: Path, name: str, commit: str, skip_hooks: bool = False, log: Log = print
+) -> bool:
+    """Undo an archive: restore ``data/<name>/`` and push ``dataset(<name>): unarchive``.
+
+    Args:
+        repo: Root of the git + DVC repository.
+        name: Dataset name, the directory under ``data/``.
+        commit: Release commit or tag of the latest version to restore from.
+        skip_hooks: Commit with ``--no-verify``.
+        log: Receives command output.
+
+    Returns:
+        Whether the data came back from the local DVC cache; when it did not,
+        ``dvc pull -R data/<name>`` restores it.
+
+    Raises:
+        ReleaseError: If the directory exists or a git command fails.
+    """
+    dataset = Dataset(repo.resolve(), name)
+    with _release_lock(dataset.repo):
+        if dataset.root.exists():
+            raise ReleaseError(f"{dataset.root} already exists")
+        _check_archive_repository(dataset, log)
+
+        head = run_git(dataset.repo, "rev-parse", "HEAD", log=log)
+        relative = dataset.relative(dataset.root)
+        message = ["commit", "-m", f"dataset({name}): unarchive"]
+        try:
+            run_git(dataset.repo, "checkout", commit, "--", relative, log=log)
+            run_git(dataset.repo, *message, *(["--no-verify"] if skip_hooks else []), log=log)
+            run_git(dataset.repo, "push", "origin", "HEAD", log=log)
+        except ReleaseError:
+            run_git(dataset.repo, "reset", "-q", head, log=log)
+            shutil.rmtree(dataset.root, ignore_errors=True)
+            raise
+        try:
+            run_dvc(dataset.repo, "checkout", "-R", relative, log=log)
+        except ReleaseError as error:
+            log(f"the local DVC cache lacks the data; run `dvc pull -R {relative}`: {error}")
+            return False
+        return True
 
 
 # ===== CLI =====
@@ -1218,6 +1619,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--version", required=True, help="Version to release, vMAJOR.MINOR.PATCH.")
     parser.add_argument("--change", required=True, help="One-line description of what changed.")
     parser.add_argument(
+        "--delete",
+        action="append",
+        default=[],
+        choices=UNITS,
+        help="Unit to delete with this release; repeat for several.",
+    )
+    parser.add_argument(
         "--tracking-uri",
         default=os.environ.get("MLFLOW_TRACKING_URI"),
         help="MLflow tracking server that registers the release (default: $MLFLOW_TRACKING_URI).",
@@ -1232,14 +1640,16 @@ def main() -> None:
     if not args.tracking_uri:
         sys.exit("--tracking-uri or MLFLOW_TRACKING_URI is required to check and register versions")
     try:
-        registered = _call_api(args.tracking_uri, f"/{args.name}/versions")["versions"]
+        registered = _call_api(args.tracking_uri, f"/{args.name}/versions")
         result = release_dataset(
             repo=args.repo,
             name=args.name,
             version=args.version,
             change=args.change,
             register=lambda record: _call_api(args.tracking_uri, "/versions", record),
-            registered_versions=[row["version"] for row in registered],
+            registered_versions=[row["version"] for row in registered["versions"]],
+            deletions=args.delete,
+            archived=bool(registered.get("archived")),
             dry_run=args.command == "check",
             skip_hooks=args.skip_hooks,
         )

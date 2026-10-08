@@ -1,5 +1,6 @@
 /**
- * Datasets page: shared presentation, dataset list, changelog, dataset details, then page state.
+ * Datasets page: shared presentation, dataset list, changelog, dataset creation, dataset
+ * lifecycle, dataset details, then page state.
  * Naming: handle* responds to interactions; fetch* reads the server.
  */
 import { useCallback, useState } from 'react';
@@ -7,8 +8,11 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Alert,
   Button,
+  Checkbox,
   Header,
+  Input,
   LegacySelect,
+  Modal,
   Spacer,
   Spinner,
   Table,
@@ -24,9 +28,16 @@ import { useSearchParams } from '../../../common/utils/RoutingUtils';
 import { DatasetReleasePanel, getErrorMessage } from './DatasetReleasePanel';
 import {
   DATASET_SPLITS,
+  archiveDataset,
+  createDataset,
+  deleteDataset,
   fetchDatasets,
+  fetchDatasetsWithArchived,
   fetchDatasetVersions,
+  getDatasetHashes,
+  unarchiveDataset,
   type DatasetHashes,
+  type DatasetStatus,
   type DatasetSummary,
 } from './datasetsApi';
 
@@ -49,6 +60,12 @@ const MetadataField = ({ label, children }: { label: string; children: React.Rea
 
 // ===== Dataset list =====
 
+const STATUS_COLORS: Record<DatasetStatus, 'lime' | 'default' | 'charcoal'> = {
+  released: 'lime',
+  unreleased: 'default',
+  archived: 'charcoal',
+};
+
 const DatasetsTable = ({
   datasets,
   selectedName,
@@ -63,7 +80,7 @@ const DatasetsTable = ({
     <TableBlock>
       <Table aria-label="Datasets" css={{ minWidth: 480 }}>
         <TableRow isHeader>
-          {['Dataset', 'Latest version', 'On disk'].map((title) => (
+          {['Dataset', 'Status', 'Latest version', 'On disk'].map((title) => (
             <TableHeader componentId="mlflow.datasets.list.header" key={title}>
               {title}
             </TableHeader>
@@ -92,6 +109,11 @@ const DatasetsTable = ({
                 >
                   {dataset.name}
                 </Button>
+              </TableCell>
+              <TableCell>
+                <Tag componentId="mlflow.datasets.list.status" color={STATUS_COLORS[dataset.status]} css={{ margin: 0 }}>
+                  {dataset.status}
+                </Tag>
               </TableCell>
               <TableCell>
                 {dataset.latest_release?.version ?? dataset.metadata?.version ?? (
@@ -150,6 +172,196 @@ const DatasetChangelogTable = ({ changelog }: { changelog: Record<string, string
   </TableBlock>
 );
 
+// ===== Dataset creation =====
+
+/** Register a dataset and write its metadata.yaml template; data is prepared afterwards. */
+const DatasetCreateModal = ({
+  repos,
+  onClose,
+  onCreated,
+}: {
+  repos: string[];
+  onClose: () => void;
+  onCreated: (name: string) => void;
+}) => {
+  const { theme } = useDesignSystemTheme();
+  const [repo, setRepo] = useState(repos[0] ?? '');
+  const [name, setName] = useState('');
+  const [source, setSource] = useState('');
+  const [metrics, setMetrics] = useState('');
+  const [error, setError] = useState<string>();
+  const [submitting, setSubmitting] = useState(false);
+  const nameIsValid = /^[a-z][a-z0-9-]*$/.test(name);
+  const handleCreate = async () => {
+    setSubmitting(true);
+    setError(undefined);
+    try {
+      const metricNames = metrics
+        .split(',')
+        .map((metric) => metric.trim())
+        .filter(Boolean);
+      await createDataset(repo, name, source.trim(), metricNames);
+      onCreated(name);
+    } catch (createError) {
+      setError(getErrorMessage(createError));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+  const fieldStyles = { display: 'block', marginBottom: 4, marginTop: theme.spacing.md };
+  return (
+    <Modal
+      componentId="mlflow.datasets.create"
+      visible
+      title="Create dataset"
+      okText="Create"
+      cancelText="Cancel"
+      okButtonProps={{ disabled: submitting || !repo || !nameIsValid || !source.trim() }}
+      onCancel={onClose}
+      onOk={handleCreate}
+    >
+      <Typography.Hint>
+        The dataset directory is fixed to data/&lt;name&gt; inside the repository. Creating registers the name and
+        writes a metadata.yaml template; nothing is committed until the first release.
+      </Typography.Hint>
+      <label htmlFor="dataset-create-repo" css={fieldStyles}>
+        Git repository
+      </label>
+      <LegacySelect
+        id="dataset-create-repo"
+        aria-label="Git repository"
+        value={repo}
+        onChange={(value: string) => setRepo(value)}
+        options={repos.map((path) => ({ value: path, label: path }))}
+        css={{ width: '100%' }}
+      />
+      <label htmlFor="dataset-create-name" css={fieldStyles}>
+        Name
+      </label>
+      <Input
+        id="dataset-create-name"
+        componentId="mlflow.datasets.create.name"
+        aria-label="Name"
+        placeholder="Lowercase letters, digits and hyphens, starting with a letter"
+        value={name}
+        onChange={(event) => setName(event.target.value)}
+      />
+      <label htmlFor="dataset-create-source" css={fieldStyles}>
+        Source
+      </label>
+      <Input
+        id="dataset-create-source"
+        componentId="mlflow.datasets.create.source"
+        aria-label="Source"
+        value={source}
+        onChange={(event) => setSource(event.target.value)}
+      />
+      <label htmlFor="dataset-create-metrics" css={fieldStyles}>
+        Metrics
+      </label>
+      <Input
+        id="dataset-create-metrics"
+        componentId="mlflow.datasets.create.metrics"
+        aria-label="Metrics"
+        placeholder="Comma-separated; leave empty for a dataset without a test split"
+        value={metrics}
+        onChange={(event) => setMetrics(event.target.value)}
+      />
+      {error && (
+        <Alert
+          componentId="mlflow.datasets.create.error"
+          type="error"
+          closable={false}
+          message="Unable to create the dataset"
+          description={error}
+          css={{ marginTop: theme.spacing.md }}
+        />
+      )}
+    </Modal>
+  );
+};
+
+// ===== Dataset lifecycle =====
+
+const LIFECYCLE_ACTIONS = {
+  delete: {
+    label: 'Delete',
+    confirm: 'removes its directory and its registration. The dataset was never released, so nothing else refers to it.',
+    run: deleteDataset,
+  },
+  archive: {
+    label: 'Archive',
+    confirm:
+      'removes data/<name> from the repository with one pushed commit and hides the dataset. Released versions, ' +
+      'git tags and DVC data are kept, and archiving can be undone.',
+    run: archiveDataset,
+  },
+  unarchive: {
+    label: 'Unarchive',
+    confirm: 'restores data/<name> from the latest release with one pushed commit and lists the dataset again.',
+    run: unarchiveDataset,
+  },
+} as const;
+
+/** Delete a never-released dataset, or archive and unarchive a released one. */
+const DatasetLifecycleButton = ({ dataset, onChanged }: { dataset: DatasetSummary; onChanged: () => void }) => {
+  const [confirming, setConfirming] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState<string>();
+  const action =
+    LIFECYCLE_ACTIONS[
+      dataset.status === 'archived' ? 'unarchive' : dataset.status === 'released' ? 'archive' : 'delete'
+    ];
+  const handleConfirmed = async () => {
+    setConfirming(false);
+    setRunning(true);
+    setError(undefined);
+    try {
+      await action.run(dataset.name);
+      onChanged();
+    } catch (actionError) {
+      setError(getErrorMessage(actionError));
+    } finally {
+      setRunning(false);
+    }
+  };
+  return (
+    <>
+      <Button
+        componentId="mlflow.datasets.lifecycle"
+        danger={action.label !== 'Unarchive'}
+        loading={running}
+        disabled={running}
+        onClick={() => setConfirming(true)}
+      >
+        {action.label}
+      </Button>
+      {error && (
+        <Alert
+          componentId="mlflow.datasets.lifecycle.error"
+          type="error"
+          closable={false}
+          message={`${action.label} failed`}
+          description={<span css={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{error}</span>}
+        />
+      )}
+      <Modal
+        componentId="mlflow.datasets.lifecycle.confirm"
+        visible={confirming}
+        title={`${action.label} ${dataset.name}?`}
+        okText={action.label}
+        cancelText="Cancel"
+        onCancel={() => setConfirming(false)}
+        onOk={handleConfirmed}
+      >
+        <p>
+          {action.label} {action.confirm.replace('<name>', dataset.name)}
+        </p>
+      </Modal>
+    </>
+  );
+};
+
 // ===== Dataset details =====
 
 const DatasetDetails = ({
@@ -190,7 +402,7 @@ const DatasetDetails = ({
   const metadata = selectedRelease?.metadata ?? (shownVersion === localVersion ? dataset.metadata : undefined);
   // Every field must come from the selected snapshot, including its changelog and hashes.
   const changelog = shownVersion ? metadata?.changelog ?? [] : dataset.changelog ?? [];
-  const hashes: DatasetHashes = selectedRelease?.hashes ?? Object.assign({}, ...(metadata?.hashes ?? []));
+  const hashes: DatasetHashes = selectedRelease?.hashes ?? getDatasetHashes(metadata);
   const changeCount = changelog.reduce((count, entry) => count + Object.keys(entry).length, 0);
   const metadataStyles = {
     border: `1px solid ${theme.colors.border}`,
@@ -203,9 +415,12 @@ const DatasetDetails = ({
       aria-label={`Dataset ${dataset.name}`}
       css={{ display: 'flex', flexDirection: 'column', gap: theme.spacing.md, minWidth: 0 }}
     >
-      <Typography.Title level={3} withoutMargins>
-        {dataset.name}
-      </Typography.Title>
+      <div css={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: theme.spacing.md }}>
+        <Typography.Title level={3} withoutMargins>
+          {dataset.name}
+        </Typography.Title>
+        <DatasetLifecycleButton dataset={dataset} onChanged={handleReleased} />
+      </div>
       {dataset.error && (
         <Alert componentId="mlflow.datasets.details.error" type="warning" closable={false} message={dataset.error} />
       )}
@@ -251,7 +466,14 @@ const DatasetDetails = ({
             {metadata?.source || <Typography.Hint>Not specified</Typography.Hint>}
           </MetadataField>
           <MetadataField label="Directory">
-            {metadata?.root || <Typography.Hint>Not specified</Typography.Hint>}
+            {dataset.repo ? (
+              `${dataset.repo}/data/${dataset.name}`
+            ) : (
+              <Typography.Hint>Not in a configured repository</Typography.Hint>
+            )}
+          </MetadataField>
+          <MetadataField label="Released by">
+            {selectedRelease?.released_by || <Typography.Hint>Not recorded</Typography.Hint>}
           </MetadataField>
           <MetadataField label="Git commit">
             {selectedRelease?.git_commit ? (
@@ -306,7 +528,7 @@ const DatasetDetails = ({
           </MetadataField>
         </div>
       </section>
-      {dataset.repo && dataset.metadata && (
+      {dataset.repo && dataset.metadata && dataset.status !== 'archived' && (
         <DatasetReleasePanel key={dataset.name} dataset={dataset} onReleased={handleReleased} />
       )}
     </section>
@@ -322,7 +544,14 @@ const DatasetsPage = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const selectedName = searchParams.get('name');
   const selectedVersion = searchParams.get('version') ?? undefined;
-  const datasets = useQuery(['deeplore-datasets'], fetchDatasets, { refetchOnWindowFocus: false, retry: false });
+  const [showArchived, setShowArchived] = useState(false);
+  const [creating, setCreating] = useState(false);
+  // The default listing shares its cache entry with the run page's dataset links.
+  const datasets = useQuery(
+    showArchived ? ['deeplore-datasets', 'with-archived'] : ['deeplore-datasets'],
+    showArchived ? fetchDatasetsWithArchived : fetchDatasets,
+    { refetchOnWindowFocus: false, retry: false },
+  );
   const refetchDatasets = datasets.refetch;
   const handleReleased = useCallback(() => {
     refetchDatasets();
@@ -352,15 +581,43 @@ const DatasetsPage = () => {
       <Header
         title="Datasets"
         buttons={
-          <Button
-            componentId="mlflow.datasets.refresh"
-            disabled={datasets.isFetching || refreshing}
-            onClick={handleRefresh}
-          >
-            Refresh
-          </Button>
+          <>
+            <Checkbox
+              componentId="mlflow.datasets.show_archived"
+              isChecked={showArchived}
+              onChange={(checked) => setShowArchived(Boolean(checked))}
+            >
+              Show archived
+            </Checkbox>
+            <Button
+              componentId="mlflow.datasets.create.open"
+              type="primary"
+              disabled={!datasets.data?.repos.length}
+              onClick={() => setCreating(true)}
+            >
+              Create dataset
+            </Button>
+            <Button
+              componentId="mlflow.datasets.refresh"
+              disabled={datasets.isFetching || refreshing}
+              onClick={handleRefresh}
+            >
+              Refresh
+            </Button>
+          </>
         }
       />
+      {creating && (
+        <DatasetCreateModal
+          repos={datasets.data?.repos ?? []}
+          onClose={() => setCreating(false)}
+          onCreated={(name) => {
+            setCreating(false);
+            refetchDatasets();
+            handleSelected(name);
+          }}
+        />
+      )}
       <Spacer shrinks={false} />
       {datasets.error ? (
         <Alert
