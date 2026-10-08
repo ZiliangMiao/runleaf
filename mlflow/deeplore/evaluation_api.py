@@ -1,8 +1,9 @@
 """Run evaluation endpoints for the Deeplore tracking server.
 
-Sections: Store, Validation, Handlers, Routes. Normal writes require complete
-identity and provenance. Content hashes are complete MD5 digests, and previously
-imported results remain available through the read endpoints.
+Sections: Store, Validation, Handlers, Routes. Writes require a registered
+dataset version and a model file among the run's artifacts. Content hashes are
+complete MD5 digests, and previously imported results remain available through
+the read endpoints.
 
 Naming table: ``validate_*`` checks provenance, ``handle_*`` serves requests,
 and ``register_*`` attaches routes.
@@ -55,33 +56,20 @@ def _get_record() -> dict[str, Any]:
     return record
 
 
-def _validate_checkpoint(
-    run_id: str, record: dict[str, Any], *, require_best: bool = False
-) -> None:
+def _validate_model_file(run_id: str, record: dict[str, Any]) -> None:
+    """Require ``model_path`` to name an existing file among the run's artifacts."""
     from mlflow.protos.service_pb2 import ListArtifacts
     from mlflow.server.handlers import list_artifacts_impl
 
-    checkpoint = record.get("ckpt_path")
-    if checkpoint is None:
-        return
-    if not isinstance(checkpoint, str):
-        raise MlflowException(
-            "ckpt_path must be a string", error_code=INVALID_PARAMETER_VALUE
-        )
-    registry._validate_artifact_path(checkpoint, "ckpt_path")
-    if require_best and Path(checkpoint).name not in ("best_ckpt.pth", "best.pt"):
-        raise MlflowException(
-            "ckpt_path must identify this run's best_ckpt.pth or best.pt checkpoint",
-            error_code=INVALID_PARAMETER_VALUE,
-        )
-    parent = Path(checkpoint).parent
+    model_path = record["model_path"]
+    parent = Path(model_path).parent
     message = ListArtifacts(run_id=run_id)
     if parent != Path("."):
         message.path = parent.as_posix()
     files = list_artifacts_impl(message).files
-    if not any(file.path == checkpoint and not file.is_dir for file in files):
+    if not any(file.path == model_path and not file.is_dir for file in files):
         raise MlflowException(
-            f"checkpoint artifact {checkpoint!r} does not exist in run {run_id}",
+            f"model file {model_path!r} does not exist in the artifacts of run {run_id}",
             error_code=INVALID_PARAMETER_VALUE,
         )
 
@@ -95,12 +83,12 @@ def handle_list_evaluations(run_id: str) -> Response:
 
 
 def handle_create_evaluation(run_id: str) -> Response:
-    """Create a complete evaluation after checking its run artifact ownership."""
+    """Write a complete evaluation after checking its model file belongs to the run."""
     record = _get_record()
     store = _get_store()
     store.get_run(run_id)
     registry._validate_record(record)
-    _validate_checkpoint(run_id, record, require_best=True)
+    _validate_model_file(run_id, record)
     evaluation, created, action = registry.create_evaluation(store, run_id, record)
     return jsonify({"evaluation": evaluation, "created": created, "action": action})
 
