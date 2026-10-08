@@ -43,6 +43,11 @@ export const RunViewTagsBox = ({
         if (key === 'run_num' && !/^r[1-9]\d*$/.test(value)) {
           throw new Error('run_num must use r followed by a positive number without leading zeros.');
         }
+        // A value stored before base_run held run numbers stays editable around; a changed one must comply.
+        const isUnchanged = existingTags.some((tag) => tag.key === key && tag.value === value);
+        if (key === 'base_run' && !isUnchanged && !/^(none|r[1-9]\d*(,r[1-9]\d*)*)$/.test(value)) {
+          throw new Error('base_run must be none or run numbers such as r12, separated by commas.');
+        }
         if (['change', 'model'].includes(key) && !/^[a-z0-9]+(?:_[a-z0-9]+)*$/.test(value)) {
           throw new Error(`${key} must use lowercase words or numbers separated by underscores.`);
         }
