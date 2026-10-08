@@ -50,6 +50,12 @@ export const buildExperimentProject = (name: string): string | undefined => {
   return separator > 0 && !/\s/.test(project) && name.slice(separator + 1).trim() ? project : undefined;
 };
 
+/** Read a run number from r12, a padded r012, or the leading field of a run name written before base_run held numbers. */
+export const buildRunNumber = (reference?: string): string | undefined => {
+  const match = /^r0*([1-9]\d*)(?:-|$)/.exec(reference ?? '');
+  return match ? `r${match[1]}` : undefined;
+};
+
 const buildRunName = (run: RunEntity): string =>
   run.data.tags?.find((tag) => tag.key === 'mlflow.runName')?.value || run.info.runName || run.info.runUuid;
 
@@ -86,7 +92,7 @@ const buildLineageNode = (
   };
 };
 
-/** Resolve base_run names only when exactly one active run in the same project matches. */
+/** Resolve base_run numbers only when exactly one active run in the same project carries them. */
 export const buildLineageGraph = (
   runs: RunEntity[],
   experiments: Pick<ExperimentEntity, 'experimentId' | 'name'>[],
@@ -104,10 +110,12 @@ export const buildLineageGraph = (
     const project = buildExperimentProject(experimentNames.get(run.info.experimentId) ?? '');
     return project ? `project:${project}` : `experiment:${run.info.experimentId}`;
   };
-  const parentsByName = new Map<string, RunEntity[]>();
+  const parentsByNumber = new Map<string, RunEntity[]>();
   for (const run of candidateRuns.values()) {
-    const key = JSON.stringify([buildProjectKey(run), buildRunName(run)]);
-    parentsByName.set(key, [...(parentsByName.get(key) ?? []), run]);
+    const runNumber = buildRunNumber(run.data.tags?.find((tag) => tag.key === 'run_num')?.value);
+    if (!runNumber) continue;
+    const key = JSON.stringify([buildProjectKey(run), runNumber]);
+    parentsByNumber.set(key, [...(parentsByNumber.get(key) ?? []), run]);
   }
   const orderedRuns = [...uniqueRuns.values()].sort(
     (left, right) =>
@@ -127,8 +135,9 @@ export const buildLineageGraph = (
     parentNames.forEach((parentName) => {
       if (parentName.toLowerCase() === 'none' || seenParents.has(parentName)) return;
       seenParents.add(parentName);
-      const parentKey = JSON.stringify([buildProjectKey(run), parentName]);
-      const matches = parentsByName.get(parentKey) ?? [];
+      // A reference without a run number stays visible as a missing parent.
+      const parentKey = JSON.stringify([buildProjectKey(run), buildRunNumber(parentName) ?? parentName]);
+      const matches = parentsByNumber.get(parentKey) ?? [];
       const parentRun = matches.length === 1 ? matches[0] : undefined;
       const parentId = parentRun?.info.runUuid ?? `missing:${parentKey}`;
       if (!nodes.has(parentId)) {

@@ -58,7 +58,7 @@ describe('RunViewTagsBox integration', () => {
     await act(async () => {
       renderTestComponent([
         { key: 'change', value: 'val1' },
-        { key: 'base_run', value: 'val2' },
+        { key: 'base_run', value: 'r2' },
         { key: 'mlflow.existing_tag_3', value: 'val2' },
         { key: 'base_run_id', value: 'obsolete-parent-id' },
       ] as any);
@@ -91,10 +91,10 @@ describe('RunViewTagsBox integration', () => {
       'test-run-uuid',
       [
         { key: 'change', value: 'val1' },
-        { key: 'base_run', value: 'val2' },
+        { key: 'base_run', value: 'r2' },
       ],
       [
-        { key: 'base_run', value: 'val2' },
+        { key: 'base_run', value: 'r2' },
         { key: 'model', value: 'vit_b_16' },
       ],
     );
