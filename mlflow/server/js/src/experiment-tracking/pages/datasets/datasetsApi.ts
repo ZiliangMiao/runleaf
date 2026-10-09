@@ -91,7 +91,7 @@ const getDeeploreJson = <T>(path: string, data?: Record<string, string>) =>
 const postDeeploreJson = <T>(path: string, data: Record<string, unknown>) =>
   postJson({ relativeUrl: `${API}${path}`, data }) as Promise<T>;
 
-const deleteDeeploreJson = <T>(path: string) => deleteJson({ relativeUrl: `${API}${path}` }) as Promise<T>;
+const deleteDeeploreJson = <T>(path: string) => deleteJson({ relativeUrl: `${API}${path}`, data: {} }) as Promise<T>;
 
 const datasetPath = (name: string) => `/datasets/${encodeURIComponent(name)}`;
 

@@ -2,7 +2,7 @@
 
 Endpoints, served under both ``/api/2.0/deeplore`` and ``/ajax-api/2.0/deeplore``:
 
-    GET    /datasets                      datasets of the configured repositories + registry state
+    GET    /datasets                      datasets of the known repositories + registry state
     POST   /datasets                      create a dataset: registration + metadata.yaml template
     DELETE /datasets/<name>               delete a dataset that was never released
     GET    /datasets/<name>/versions      registered versions of one dataset + archived flag
@@ -22,7 +22,7 @@ row, where any server worker can read it.
 
 Server environment:
 
-    DEEPLORE_DATASET_REPOS            dataset repository roots, ``os.pathsep`` separated
+    DEEPLORE_DATASET_REPOS            initial repository roots, ``os.pathsep`` separated
     DEEPLORE_DATASET_SKIP_GIT_HOOKS   ``true`` to commit with ``--no-verify`` when the
                                       server cannot run a repository's git hooks
 
@@ -107,9 +107,44 @@ def _get_store() -> Any:
     return store
 
 
-def find_repos() -> list[Path]:
-    """List the dataset repositories configured through ``DEEPLORE_DATASET_REPOS``."""
-    return [Path(part) for part in os.environ.get(REPOS_ENV_VAR, "").split(os.pathsep) if part]
+def find_repos(entries: Optional[dict[str, dict]] = None) -> list[Path]:
+    """List configured and persisted dataset repository roots without duplicates.
+
+    Args:
+        entries: Registered datasets, or ``None`` to read them from the store.
+
+    Returns:
+        Resolved roots in configuration order, followed by registered roots.
+    """
+    if entries is None:
+        entries = registry.list_datasets(_get_store())
+    paths = [part for part in os.environ.get(REPOS_ENV_VAR, "").split(os.pathsep) if part]
+    paths.extend(entry["repo"] for entry in entries.values() if entry.get("repo"))
+    return list(dict.fromkeys(Path(path).resolve() for path in paths))
+
+
+def find_repository_datasets(entries: dict[str, dict]) -> list[Dataset]:
+    """Discover each dataset once, respecting its recorded repository.
+
+    Args:
+        entries: Registered datasets, keyed by name.
+
+    Returns:
+        Datasets from their recorded roots, or the first known root for names
+        without a recorded repository. An unavailable recorded root never
+        falls back to another copy of the dataset.
+    """
+    recorded_repos = {
+        name: Path(entry["repo"]).resolve()
+        for name, entry in entries.items()
+        if entry.get("repo")
+    }
+    datasets: dict[str, Dataset] = {}
+    for repo in find_repos(entries):
+        for dataset in find_datasets(repo):
+            if recorded_repos.get(dataset.name, repo) == repo:
+                datasets.setdefault(dataset.name, dataset)
+    return list(datasets.values())
 
 
 def find_dataset(name: str) -> Dataset:
@@ -119,39 +154,78 @@ def find_dataset(name: str) -> Dataset:
         name: Dataset name.
 
     Returns:
-        The dataset in the first configured repository that holds it.
+        The dataset in its recorded repository, or the first known repository
+        when no repository is recorded for the name.
 
     Raises:
-        MlflowException: If no configured repository holds the dataset.
+        MlflowException: If no known repository holds the dataset.
     """
-    for repo in find_repos():
-        for dataset in find_datasets(repo):
-            if dataset.name == name:
-                return dataset
+    for dataset in find_repository_datasets(registry.list_datasets(_get_store())):
+        if dataset.name == name:
+            return dataset
     raise MlflowException(
-        f"dataset {name!r} is not in any repository of ${REPOS_ENV_VAR}",
+        f"dataset {name!r} is not in any known repository on the MLflow server",
         error_code=RESOURCE_DOES_NOT_EXIST,
     )
 
 
-def find_repo(path: str) -> Path:
-    """Resolve a requested repository to one of the configured roots.
+def find_repo(path: Path) -> Path:
+    """Validate an existing local Git working-tree root and resolve its path.
 
     Args:
-        path: Repository root as the client names it.
+        path: Absolute repository root on the MLflow server.
 
     Returns:
-        The matching configured root, resolved.
+        The validated working-tree root, resolved.
 
     Raises:
-        MlflowException: If the path is not a configured repository.
+        MlflowException: If the directory is unavailable or not a Git working-tree root.
     """
-    for repo in find_repos():
-        if path and repo.resolve() == Path(path).resolve():
-            return repo.resolve()
-    raise MlflowException(
-        f"{path!r} is not a repository of ${REPOS_ENV_VAR}", error_code=INVALID_PARAMETER_VALUE
-    )
+    if not path.is_absolute():
+        raise MlflowException(
+            "repo must be an absolute path to a Git repository on the MLflow server",
+            error_code=INVALID_PARAMETER_VALUE,
+        )
+    try:
+        repo = path.resolve(strict=True)
+        if not repo.is_dir():
+            raise NotADirectoryError(str(repo))
+    except (OSError, RuntimeError, ValueError) as error:
+        raise MlflowException(
+            f"repository directory {str(path)!r} is unavailable to the MLflow server; "
+            "check that it exists and, for Docker deployments, is mounted at the same path",
+            error_code=INVALID_PARAMETER_VALUE,
+        ) from error
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=repo,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise MlflowException(
+            f"could not inspect Git repository {str(repo)!r}: {error}",
+            error_code=INVALID_PARAMETER_VALUE,
+        ) from error
+    if result.returncode != 0:
+        raise MlflowException(
+            f"{str(repo)!r} is not an accessible Git working-tree root: "
+            f"{result.stderr.strip()}",
+            error_code=INVALID_PARAMETER_VALUE,
+        )
+    root = Path(result.stdout.strip()).resolve()
+    if root != repo:
+        raise MlflowException(
+            f"{str(repo)!r} is inside a Git repository; use its root {str(root)!r}",
+            error_code=INVALID_PARAMETER_VALUE,
+        )
+    return repo
 
 
 # ===== Worker: the detached release process =====
@@ -307,7 +381,7 @@ def build_dataset_summary(
 
 
 def handle_list_datasets() -> Response:
-    """List the datasets of the configured repositories with their registry state.
+    """List the datasets of known repositories with their registry state.
 
     Archived datasets are listed only with ``?include_archived=true``.
     """
@@ -318,13 +392,12 @@ def handle_list_datasets() -> Response:
     changelogs = registry.list_dataset_changelogs(store)
     entries = registry.list_datasets(store)
 
-    repos = find_repos()
+    repos = find_repos(entries)
     datasets = [
         build_dataset_summary(
             dataset, versions_by_name.get(dataset.name, []), entries.get(dataset.name)
         )
-        for repo in repos
-        for dataset in find_datasets(repo)
+        for dataset in find_repository_datasets(entries)
     ]
     # Persisted history remains visible when its directory is unavailable.
     listed = {summary["name"] for summary in datasets}
@@ -344,7 +417,7 @@ def handle_list_datasets() -> Response:
                     # An archived dataset has no directory by design.
                     "error": None
                     if status == STATUS_ARCHIVED
-                    else "not found in any configured repository",
+                    else "not found in any known repository on the MLflow server",
                     "latest_release": versions[0] if versions else None,
                     "release_count": len(versions),
                 }
@@ -417,9 +490,18 @@ def handle_create_dataset() -> Response:
             "metrics must be a list of metric names", error_code=INVALID_PARAMETER_VALUE
         )
 
+    repository = body.get("repo")
+    if not isinstance(repository, str) or not repository.strip():
+        raise MlflowException(
+            "repo must be an absolute path to a Git repository on the MLflow server",
+            error_code=INVALID_PARAMETER_VALUE,
+        )
     store = _get_store()
-    dataset = Dataset(find_repo(str(body.get("repo") or "")), name)
-    on_disk = {found.name for repo in find_repos() for found in find_datasets(repo)}
+    dataset = Dataset(find_repo(Path(repository.strip())), name)
+    repos = find_repos(registry.list_datasets(store))
+    if dataset.repo not in repos:
+        repos.append(dataset.repo)
+    on_disk = {found.name for repo in repos for found in find_datasets(repo)}
     if dataset.root.exists() or name in on_disk | registry.list_dataset_changelogs(store).keys():
         raise MlflowException(f"dataset {name!r} already exists", error_code=RESOURCE_ALREADY_EXISTS)
     entry = registry.create_dataset(store, name, str(dataset.repo))
@@ -511,7 +593,12 @@ def handle_unarchive_dataset(name: str) -> Response:
             f"dataset {name!r} has no release to restore from",
             error_code=INVALID_PARAMETER_VALUE,
         )
-    repo = find_repo(entry["repo"] or "")
+    if not entry.get("repo"):
+        raise MlflowException(
+            f"dataset {name!r} has no recorded repository on the MLflow server",
+            error_code=INVALID_PARAMETER_VALUE,
+        )
+    repo = find_repo(Path(entry["repo"]))
     _check_repo_idle(store, repo)
     latest = max(versions, key=lambda row: parse_version(row["version"]))
     try:
