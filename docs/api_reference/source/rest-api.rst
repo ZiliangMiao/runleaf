@@ -6,10 +6,10 @@ REST API
 ========
 
 
-The MLflow REST API allows you to create, list, and get experiments and runs, and log parameters, metrics, and artifacts.
-The API is hosted under the ``/api`` route on the MLflow tracking server. For example, to search for
-experiments on a tracking server hosted at ``http://localhost:5000``, make a POST request to
-``http://localhost:5000/api/2.0/mlflow/experiments/search``.
+MLflow REST (Representational State Transfer) API 用于创建和查询 experiments/runs, 以及记录参数, 指标和产物.
+当前定制服务器还提供 Dataset 发布, Evaluation 和 Benchmark API, 见 :ref:`deeplore-rest-api`.
+例如, 向 ``http://192.168.110.148:5050/api/2.0/mlflow/experiments/search`` 发送 POST 请求可以查询原生 experiments.
+该地址对应仓库中的部署配置, 使用其他部署时替换服务器地址.
 
 .. important::
     The MLflow REST API requires content type ``application/json`` for all POST requests.
@@ -20,6 +20,352 @@ experiments on a tracking server hosted at ``http://localhost:5000``, make a POS
 
 ===========================
 
+
+.. _deeplore-rest-api:
+
+Deeplore HTTP API
+=================
+
+本节记录定制 Tracking Server 的 Dataset 发布, Evaluation 和 Benchmark 接口. Python 函数签名, 参数和使用示例见 :doc:`Python API 和使用说明 <python_api/deeplore_core>`.
+
+接口前缀为 ``/api/2.0/deeplore``, 页面内部也使用 ``/ajax-api/2.0/deeplore``. 若配置静态路径前缀, 两者还需加上该前缀. 原生接口仍使用 ``/api/2.0/mlflow``, 位于本文后半部分. 以下约定以当前实现为准.
+
+对象和职责
+----------
+
+================ ========================================================== ============================================
+对象             含义                                                       记录位置
+================ ========================================================== ============================================
+Experiment       指标可以比较的一组 runs, 名称为 ``<project>-<experiment>`` 原生 MLflow experiment
+Run              一次训练设置固定的训练或权重变换过程                       原生 MLflow run
+Dataset version  数据集的一次整体发布, train/val/test 各自保存内容摘要      定制数据集登记表, Git tag, ``metadata.yaml``
+Dataset input    某 run 使用的数据及用途                                    原生 MLflow dataset input
+Evaluation       某 run 的最佳检查点在指定测试内容上的评估结果              定制 evaluation 表
+Benchmark        以 ``(dataset_name, test_hash)`` 组织的跨 run 比较         从数据集和 evaluation 聚合
+Model Monitor    训练和验证指标, 包括最佳检查点选择过程                     原生 run metrics
+System Monitor   训练期间硬件资源指标                                       原生 run metrics
+Registered Model 同一交付用途的模型版本容器                                 原生 Model Registry
+Model Version    一个具体模型包的数字版本                                   原生 Model Registry
+================ ========================================================== ============================================
+
+训练设置变化, 稀疏化或量化导致权重变化时, 按业务约定建立新 run. 设置不变的断点续训重连原 run. ``base_run`` 表示训练设置参考关系, 不表示预训练权重来源. 测试集内容变化后, 需要重新评估才能与该内容上的其他结果比较; Benchmark 页面不会自动重跑评估.
+
+Data Version Control (DVC) 管理数据内容, Git 管理 ``.dvc`` 指针和发布元数据. 业务内容摘要使用 Message Digest Algorithm 5 (MD5): 文件为 32 位小写十六进制, DVC 目录摘要保留 ``.dir``. 不截断摘要, 不将其他算法的历史摘要改名冒充 MD5.
+
+服务端配置
+----------
+
+运行前提
+~~~~~~~~
+
+定制 Dataset, Evaluation 和 Benchmark API 需要基于 Structured Query Language (SQL) 数据库的 tracking 后端, 当前部署使用 SQLite. 数据集发布还要求服务进程可以读写仓库, 访问 Git/DVC 远端并持有相应凭据.
+
+================================================= ========================================================
+配置                                              含义
+================================================= ========================================================
+``DEEPLORE_DATASET_REPOS``                        数据仓库根目录列表, Linux 上以 ``:`` 分隔
+``DEEPLORE_DATASET_SKIP_GIT_HOOKS=true``          发布提交使用 ``--no-verify``, 仅在部署环境明确需要时配置
+``XDG_CACHE_HOME``, ``TMPDIR``, ``TMP``, ``TEMP`` 通用缓存和临时目录, 物理存储必须在 ``/data``
+``DVC_SITE_CACHE_DIR``                            DVC 站点缓存目录, 同样放在 ``/data``
+================================================= ========================================================
+
+当前部署文件为 ``/data/Projects/deeplore-mlflow/deploy/local/docker-compose.yml``, 监听 ``0.0.0.0:5050``. 容器内部也显式配置 ``/data`` 上的缓存和临时目录. 这些 API 没有独立的访问凭据配置入口, 访问策略由实际服务器及其前置服务提供.
+
+数据集结构和发布
+----------------
+
+目录契约
+~~~~~~~~
+
+数据集位于配置仓库的 ``data/<name>/``, 由 ``metadata.yaml`` 被发现. 样本文件与 ``_reference.json`` 应由数据构建脚本确定性生成, 不写入构建时间或整体发布版本等无关内容.
+
+.. code:: text
+
+   data/inat/
+     metadata.yaml
+     assets/
+     assets.dvc
+     annotations/
+     annotations.dvc
+     samples/
+       train/
+         data.json
+         _reference.json
+       train.dvc
+       val/
+         data.json
+         _reference.json
+       val.dvc
+       test/
+         data.json
+         _reference.json
+       test.dvc
+
+实际文件名是单数 ``_reference.json``. 每个存在的 split 使用 ``data.json`` 或 ``shard_000000.json`` 等分片, 两种形式不能并存. 分片从 0 连续编号, 补零宽度一致. assets, annotations 和三个 split 均按存在情况发布; 缺少目录会产生 warning, 没有任何 split 也不会单独阻断发布.
+
+.. code:: json
+
+   {
+     "hash": "md5",
+     "files": {
+       "assets/images/image-0001.jpg": "0123456789abcdef0123456789abcdef"
+     }
+   }
+
+上面的摘要仅示意格式, 使用时必须替换成真实文件 MD5. 没有外部依赖时保留 ``"files": {}``. 引用路径相对数据集根目录, 不能是绝对路径, 不能含 ``..``, 不能指向 ``samples/``. 发布检查会逐个计算引用文件内容摘要. 自动发现依赖的范围是样本内容中以 ``assets/`` 或 ``annotations/`` 开头的字符串, 不会分析任意训练代码的文件读取行为.
+
+发布后的元数据示例:
+
+.. code:: yaml
+
+   name: inat
+   source: https://www.inaturalist.org/
+   root: /data/Projects/deepdet-dataset/data/inat
+   version: v1.0.0
+   hashes:
+     - train: "0123456789abcdef0123456789abcdef.dir"
+     - val: "123456789abcdef0123456789abcdef0.dir"
+     - test: null
+   metrics: ["AP"]
+   changelog:
+     - v1.0.0: initial release
+
+``AP`` 表示平均精度 (Average Precision). 元数据内的 ``hashes`` 是列表, HTTP 版本记录顶层的 ``hashes`` 是对象. 正常发布生成的这两种结构均保留 train/val/test 的完整摘要, 缺失为 null. assets/annotations 的快照由 ``.dvc`` 和 Git tag 关联, 不重复写入 metadata.hashes. ``version``, ``hashes`` 和新增 changelog 由发布流程生成, 不手工伪造.
+
+版本和检查
+~~~~~~~~~~
+
+版本使用语义化版本 (Semantic Versioning) 形式 ``vX.Y.Z``, 无多余前导零. 业务上, X 表示不兼容的语义或读取约定变化, Y 表示数据组成或划分变化, Z 表示已有规则下的错误修正. 工具只校验格式和递增关系, 不判断变更应该属于哪一级.
+
+下一版本只能选择 patch+1, minor+1 且 patch 归零, 或 major+1 且其余归零. 尚无版本时允许 ``v0.0.1``, ``v0.1.0``, ``v1.0.0``. 当前版本必须与 changelog 最高版本一致; 已存在于本地 metadata, 本地 tag 或 MLflow 登记表的版本不能作为新版本重复发布.
+
+检查要求仓库已初始化 Git/DVC, HEAD 位于分支上, 暂存区不包含本次数据集发布以外的变动. 不要求整个工作树没有改动. Check 会检查样本结构和引用内容, 但不访问远端 tag, 也不保证后续 DVC/Git 推送成功.
+
+页面操作
+~~~~~~~~
+
+1. 打开 ``Datasets``, 选择数据集. 新数据集需要先在配置仓库建立 ``data/<name>/metadata.yaml``, 页面当前没有创建表单. 首次发布前 metadata 至少包含与目录一致的 name, 省略 version, changelog 使用空列表; 不要把前面的已发布示例的版本和摘要复制为初始状态.
+2. 在 ``Metadata version`` 选择已发布版本或可用本地元数据, 查看 Source, Directory, Metrics, Hashes 和 Changelog. 页面只读, 显示的 hash 不是实时重算结果.
+3. 修改本地描述或配置后, 在 ``Release a new version`` 中选择下一版本, 填写 ``Change description``.
+4. 点击 ``Check`` 查看 error/warning. error 阻断发布, warning 不阻断.
+5. 点击 ``Release`` 并确认, 等待任务成功和新版本登记. 仅 Check 成功不表示已发布.
+
+完整发布顺序为: 校验, 对存在目录执行 DVC 跟踪并移除缺失目录的旧指针, 更新 metadata, 暂存本次发布文件, 创建提交与带注释 tag, 先推送 DVC 数据, 再原子推送当前分支及本次 tag, 最后从 tag 对应提交读取元数据并登记 MLflow.
+
+发布器生成提交消息 ``dataset(<name>): release <version>, <change>`` 和 tag ``<name>-<version>``. 这是发布器的既有行为, 点击 Release 或执行 release 命令会实际提交和推送仓库. 它不会自动把无关构建脚本纳入发布提交.
+
+发布失败与恢复
+~~~~~~~~~~~~~~
+
+================================= ==================================================================
+失败位置                          当前行为与处理
+================================= ==================================================================
+校验失败                          不进入后续发布步骤, 修复 findings 后重新检查
+DVC/metadata/暂存/commit 阶段失败 恢复原 metadata 并取消本次暂存, DVC 指针可能保留变化, 需要检查仓库
+commit 已成功, tag 失败           保留 commit, 按错误提示修复 tag 后再继续
+DVC 或 Git 推送失败               保留 commit/tag, 修复远端或凭据问题后, 重新提交同版本 release
+推送成功, MLflow 登记失败         保留远端发布, 重新提交同版本 release 完成登记
+================================= ==================================================================
+
+自动续发要求版本尚未登记, 本地发布 tag 指向当前 HEAD, 且 tag 内 metadata.version 一致. 满足时跳过检查到 commit/tag 的步骤, 重新执行推送和登记. HEAD 已移动或 tag 缺失时, 不能假设会自动恢复. 目前没有专用 Retry 按钮或接口, 页面下一版本列表也不一定包含失败版本; 同版本恢复使用下面的 HTTP API 或命令行.
+
+Dataset HTTP API
+~~~~~~~~~~~~~~~~
+
+以下路径统一添加前缀 ``/api/2.0/deeplore``, 页面内部也可用 ``/ajax-api/2.0/deeplore``. POST 使用 ``Content-Type: application/json``. 成功返回 HTTP 200.
+
+==== ============================== ==================================================================================
+方法 相对路径                       请求和响应
+==== ============================== ==================================================================================
+GET  ``/datasets``                  返回 ``{"repos": [...], "datasets": [...]}``
+GET  ``/datasets/<name>/versions``  返回 ``{"versions": [...]}``, 按登记时间降序; 未知名称返回空列表
+POST ``/datasets/<name>/releases``  必填 version/change, 可选 dry_run; 返回 ``{"job": {...}}``
+GET  ``/dataset-releases``          可选 ``?name=...``, 返回最近最多 20 个任务 ``{"jobs": [...]}``, 列表不包含日志正文
+GET  ``/dataset-releases/<job_id>`` 返回带完整 log/findings 的 ``{"job": {...}}``
+POST ``/datasets/versions``         登记已经推送的版本, 返回 ``{"version": {...}}``; 不负责 DVC/Git 上传
+==== ============================== ==================================================================================
+
+Dataset summary 包含 ``name``, ``repo``, ``units``, ``metadata``, ``next_versions``, ``error``, ``latest_release``, ``release_count``, ``changelog``. ``units`` 的键为 assets/annotations/train/val/test. ``next_versions`` 根据本地 metadata.version 计算. 数据库仍有记录而仓库不再可用时, summary 仍显示, 但 repo/metadata 为 null, units 为空, 不可从页面发布.
+
+版本记录包含 ``name``, ``version``, ``change``, ``hashes``, ``metadata``, ``git_repo``, ``git_tag``, ``git_commit``, ``created_at``. ``created_at`` 为 Unix 毫秒. 历史补录版本可能只有 hashes.test, 其他 split 键缺失, 且没有完整 metadata 或 Git 信息. ``latest_release`` 取最新登记记录, 不等于对版本号取最大值.
+
+发布请求示例:
+
+.. code:: http
+
+   POST /api/2.0/deeplore/datasets/inat/releases HTTP/1.1
+   Content-Type: application/json
+
+   {"version":"v1.0.1","change":"fix labels","dry_run":true}
+
+``dry_run`` 默认 false, 必须传 JSON 布尔值, 不要传字符串 ``"false"``. 改为 false 才会实际发布. 响应只表示已建立任务, 不代表完成:
+
+.. code:: json
+
+   {
+     "job": {
+       "job_id": "<job_id>",
+       "status": "pending",
+       "dry_run": true,
+       "steps": {},
+       "findings": [],
+       "error": null
+     }
+   }
+
+上面省略了 repo/name/version/change/pid/log/created_at/updated_at. ``status`` 为 pending/running/succeeded/failed. 轮询单任务直到结束; HTTP 200 中也可能携带 failed 任务. ``steps`` 使用字符串键 ``"2"`` 到 ``"8"``, 依次对应检查, DVC, metadata, 暂存, commit/tag, 推送, 登记; 值为 running/done/failed/skipped. Finding 结构为 ``{"level":"error|warning","check":"...","message":"..."}``.
+
+同仓库只允许一个 pending/running 任务. worker 每 2 秒报告心跳; 查询或再次启动任务时, 超过 120 秒无报告的活动任务会被标记 failed, 之后应先检查仓库实际状态.
+
+``POST /datasets/versions`` 必填 ``name``, ``version``, ``change``, ``hashes``, ``metadata``, ``git_repo``, ``git_tag``, ``git_commit``. metadata 必须是对象. 同 ``(name, version)`` 可再次登记补全元数据, 但已建立的 split 内容摘要不可替换. 此接口不重算文件摘要, 不验证远端是否已收到内容, 应由发布器在推送成功后调用.
+
+命令行操作
+~~~~~~~~~~
+
+命令行界面 (Command-Line Interface, CLI) 在执行命令的机器操作仓库, 通过 HTTP 查询并登记版本, 不创建服务器 release job.
+
+.. code:: bash
+
+   python -m mlflow.deeplore.dataset_release check \
+     --repo /data/Projects/deepdet-dataset \
+     --name inat \
+     --version v1.0.1 \
+     --change "fix labels" \
+     --tracking-uri http://192.168.110.148:5050
+
+将 ``check`` 改为 ``release`` 执行真实提交, 推送和登记. Check 也需要 tracking 地址读取已登记版本. ``--tracking-uri`` 可由 ``MLFLOW_TRACKING_URI`` 提供; ``--skip-hooks`` 显式跳过 Git hooks. 从普通官方 MLflow 安装运行此模块会缺少定制发布入口.
+
+Evaluation API 和结果上传
+-------------------------
+
+HTTP 接口
+~~~~~~~~~
+
+使用相同 ``/api/2.0/deeplore`` 前缀, 成功均返回 HTTP 200.
+
+==== ================================ =================================================================================
+方法 相对路径                         响应
+==== ================================ =================================================================================
+GET  ``/runs/<run_id>/evaluations``   ``{"evaluations": [...]}``, 已知评估时间降序, 未知时间最后, 无分页
+POST ``/runs/<run_id>/evaluations``   ``{"evaluation": {...}, "created": true或false, "action": "created"或"updated"}``
+GET  ``/evaluations/<evaluation_id>`` ``{"evaluation": {...}}``
+==== ================================ =================================================================================
+
+POST 请求字段:
+
+=================== ==== ============================================================================
+字段                必填 约束
+=================== ==== ============================================================================
+``dataset_name``    是   精确数据集名称, 非空且无首尾空白, 最长 256
+``dataset_version`` 是   已知版本, 非空且无首尾空白, 最长 64
+``test_hash``       否   完整 MD5, 可带 ``.dir``; 提供时必须匹配该版本登记内容
+``ckpt_path``       是   所属 run 已上传的最佳检查点相对路径, 最长 1024
+``ckpt_hash``       是   实际评估检查点的完整文件 MD5, 不带 ``.dir``
+``evaluated_at``    是   非负整数 Unix 毫秒, 不接受布尔值
+``metrics``         是   非空对象, 名称非空, 值为有限数值, 不接受布尔值或 null
+``params``          否   默认 ``{}``, 键为非空字符串, 平铺键值, 值可为字符串, 有限数值, 布尔值或 null
+=================== ==== ============================================================================
+
+HTTP 写入口目前只接受文件名 ``best_ckpt.pth`` 或 ``best.pt``, 例如 ``checkpoints/best_ckpt.pth``. 不接受绝对路径, ``..``, 反斜杠, 冒号或非标准相对路径. 不支持直接把任意 ONNX 或部署模型写入这个接口.
+
+若省略 test_hash, 服务器从已登记版本读取 test 内容摘要. 历史原生 evaluation input 或服务器当前数据集元数据可作为兼容证据, 但只知道版本号或 changelog 不足以证明 test 内容. 正常流程应先完成数据集版本登记.
+
+服务器会验证数据集身份, test_hash 与登记内容的对应关系, 检查点在该 run 中存在以及 ckpt_hash 格式. 它不会重新读取工作区测试内容, 也不会下载检查点重算 ckpt_hash. 检查点内容校验使用客户端函数 :py:func:`deeplore_core.mlflow_ops.log_benchmark_evaluation`.
+
+请求体示例, 其中名称, 版本, 摘要和时间必须替换为实际评估数据:
+
+.. code:: json
+
+   {
+     "dataset_name": "inat",
+     "dataset_version": "v1.0.0",
+     "test_hash": "0123456789abcdef0123456789abcdef.dir",
+     "ckpt_path": "checkpoints/best_ckpt.pth",
+     "ckpt_hash": "123456789abcdef0123456789abcdef0",
+     "evaluated_at": 1791331200000,
+     "metrics": {"AP": 0.42},
+     "params": {"batch_size": 16}
+   }
+
+返回值和覆盖规则
+~~~~~~~~~~~~~~~~
+
+Evaluation 对象字段为:
+
+.. code:: text
+
+   evaluation_id, run_id, dataset_name, dataset_version,
+   association_status, benchmark_name, test_hash,
+   ckpt_path, ckpt_hash, evaluated_at, metrics, params, created_at
+
+POST 的响应外层包含 ``created`` 布尔值和 ``action`` 字符串. 新建为 true/created, 覆盖为 false/updated. 新写入的 association_status 为 confirmed, benchmark_name 等于 dataset_name. evaluation_id 由服务器分配, created_at 为首次创建的 Unix 毫秒时间. 历史导入记录可能为 pending 或存在空字段, 读取接口保留这些记录.
+
+对外覆盖语义是 ``(run_id, dataset_name, test_hash)``. 相同 run, 相同数据集, 相同 test 内容的重复评估覆盖原记录, 即使 dataset_version 不同. 覆盖保留 evaluation_id 和 created_at, 替换版本, 检查点, 参数, 指标和 evaluated_at. 服务端不比较 evaluated_at 新旧, 后提交的较早结果也会覆盖. 不同 test_hash 独立保存.
+
+页面入口为 ``Run -> Evaluations``, 按数据集分组并按评估时间降序展示. 展开记录查看 Params 和 Metrics, 点击检查点链接进入 Artifacts.
+
+这个表不保存每次覆盖的历史. 如果要追溯每次评估的报告和参数快照, 将它们上传到独立时间戳产物目录.
+
+Benchmark 比较和 Lineage
+------------------------
+
+Benchmark 查询
+~~~~~~~~~~~~~~
+
+``GET /api/2.0/deeplore/experiments/<experiment_id>/benchmarks`` 返回:
+
+.. code:: json
+
+   {
+     "experiment_id": "<experiment_id>",
+     "runs": [
+       {"run_id": "<run_id>", "run_name": "r42-disable_mixup-r41-yolox_m", "run_num": 42}
+     ],
+     "benchmarks": [
+       {
+         "dataset_name": "inat",
+         "test_hash": "0123456789abcdef0123456789abcdef.dir",
+         "dataset_versions": ["v1.0.0", "v1.0.1"],
+         "first_dataset_version": "v1.0.0",
+         "metric_names": ["AP"],
+         "evaluations": []
+       }
+     ]
+   }
+
+runs 包含该 experiment 的全部 active runs, 包括未评估 run. 返回的 run_num 是整数或 null, 按编号升序, 缺失值最后. benchmarks 以 ``(dataset_name, test_hash)`` 分组, evaluations 为完整 Evaluation 对象, 仅纳入该 experiment 的 active runs 和 confirmed 记录.
+
+目录来自全局已登记版本及服务器发现的本地数据集, 因此可能存在 evaluations 为空的组. 同 test hash 的多个版本合并. 只有一个版本时 first_dataset_version 直接取该版本; 多版本时按语义版本取最早值, 其中任一版本无法解析则返回 null. 不同 hash 不可当成同一测试条件直接比较.
+
+页面操作: Experiment -> ``Benchmarks``, 选择一个或多个 Dataset, 为每个选择 Version 和 Metrics, 切换 Table/Chart, 按编号或指标排序, 显示/隐藏 runs, 选择 baseline 查看差值. Version 选项显示该 hash 首次出现的版本, 并非每个发布版本独立一列. 缺少 first_dataset_version 的组当前不进入页面选项.
+
+Python 接入和页面使用
+---------------------
+
+训练与模型操作的 Python API, Model/System Monitor, Lineage 和 Model Registry 使用说明见 :doc:`Python API 和使用说明 <python_api/deeplore_core>`. 评估记录的客户端内容校验使用 :py:func:`deeplore_core.mlflow_ops.log_benchmark_evaluation`; 服务器验证登记身份和 artifact 存在, 不替代客户端重新读取实际评估文件.
+
+HTTP 错误和功能边界
+-------------------
+
+HTTP 错误体采用 ``{"error_code": "...", "message": "..."}``. 发布任务的后台错误还需读取 job.status/error/findings/log.
+
+====================================== =========================================================
+返回                                   含义
+====================================== =========================================================
+HTTP 400 / ``INVALID_PARAMETER_VALUE`` 请求字段, 摘要, 路径, 版本或发布并发条件不满足
+HTTP 404 / ``RESOURCE_DOES_NOT_EXIST`` run, experiment, evaluation, job 或待发布本地数据集不存在
+HTTP 500 / ``FEATURE_DISABLED``        当前 tracking 后端不支持这些 SQL 接口
+HTTP 200 且 job.status 为 failed       任务创建或查询成功, 但后台发布失败
+====================================== =========================================================
+
+当前没有 Dataset/Version/Evaluation 删除 API. 移除 split 通过新版本发布表达: 工作区目录缺失时移除旧指针并登记 null hash, 不删除历史版本. 没有独立 Retry 接口; 恢复按前文同版本 release 条件执行.
+
+``MLflow焚决.md`` 中的 dataset_hash/checkpoint_path/checkpoint_hash/evaluation_time 对应当前 HTTP 字段 test_hash/ckpt_path/ckpt_hash/evaluated_at. 当前 Evaluation 写入限定 best_ckpt.pth/best.pt, Benchmark 查询和比较页面已经实现. 训练前全量校验, validation 变更后自动重选检查点与重评估仍由调用方处理.
+
+实现索引
+--------
+
+服务端实现位于 ``/data/Projects/deeplore-mlflow/mlflow/deeplore/``: ``dataset_api.py`` 负责路由和任务, ``dataset_release.py`` 负责发布恢复, ``dataset_registry.py`` 负责版本登记, ``evaluation_api.py`` 和 ``evaluation_registry.py`` 负责评估写入, ``benchmark_api.py`` 负责比较查询.
 
 .. _mlflowMlflowServicecreateExperiment:
 
