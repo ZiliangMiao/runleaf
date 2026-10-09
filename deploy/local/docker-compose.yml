@@ -1,5 +1,5 @@
 # Tracking server with dataset releases: an image with git + dvc
-# (Dockerfile.datasets), the dataset repository mounted read-write, and the
+# (Dockerfile.datasets), local project repositories mounted read-write, and the
 # credentials both pushes need.
 #
 #   docker compose -f deploy/local/docker-compose.yml up -d
@@ -42,7 +42,8 @@ services:
       - /data/Projects/mlflow/.local/tracking-server:/data/Projects/mlflow/.local/tracking-server
       # --- dataset releases ---
       # Same path as on the host: metadata.yaml and the registry record absolute paths.
-      - /data/Projects/deepdet-dataset:/data/Projects/deepdet-dataset
+      - /data/Projects:/data/Projects
+      - /data/cache/bld/dvc:/data/cache/bld/dvc
       - /home/bld/.ssh:/home/bld/.ssh:ro
       - /home/bld/.gitconfig:/home/bld/.gitconfig:ro
     command:

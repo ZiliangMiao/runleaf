@@ -77,7 +77,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Iterator, Optional, Sequence
+from typing import Any, Callable, Collection, Iterator, Optional, Sequence
 
 import yaml
 
@@ -148,6 +148,16 @@ class Dataset:
 def pointer_path(unit_dir: Path) -> Path:
     """Return the ``.dvc`` pointer that tracks a unit directory."""
     return unit_dir.with_name(unit_dir.name + ".dvc")
+
+
+def _find_release_files(dataset: Dataset) -> list[Path]:
+    """Every file a release may write: metadata, pointers and DVC's .gitignore files."""
+    return [
+        dataset.metadata_path,
+        *(pointer_path(unit_dir) for unit_dir in dataset.unit_dirs),
+        dataset.root / ".gitignore",
+        dataset.root / SAMPLES_DIR / ".gitignore",
+    ]
 
 
 def find_datasets(repo: Path) -> list[Dataset]:
@@ -604,15 +614,15 @@ Log = Callable[[str], None]
 
 
 def run_command(args: list[str], cwd: Path, log: Log) -> str:
-    """Run one command to completion and return its combined output.
+    """Run one command to completion and return its standard output.
 
     Args:
         args: Program and arguments.
         cwd: Working directory.
-        log: Receives the command line and its output.
+        log: Receives the command line, standard output and standard error.
 
     Returns:
-        Combined stdout and stderr, stripped.
+        Standard output, stripped. Standard error is logged separately.
 
     Raises:
         ReleaseError: If the program is missing or exits non-zero.
@@ -627,18 +637,21 @@ def run_command(args: list[str], cwd: Path, log: Log) -> str:
             env=env,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stderr=subprocess.PIPE,
             text=True,
             check=False,
         )
     except FileNotFoundError as error:
         raise ReleaseError(f"{args[0]} is not installed in the release environment") from error
     output = completed.stdout.strip()
-    if output:
-        log(output)
+    diagnostics = completed.stderr.strip()
+    for text in (output, diagnostics):
+        if text:
+            log(text)
     if completed.returncode != 0:
+        details = "\n".join(text for text in (output, diagnostics) if text)
         raise ReleaseError(
-            f"`{' '.join(args)}` failed with exit code {completed.returncode}:\n{output}"
+            f"`{' '.join(args)}` failed with exit code {completed.returncode}:\n{details}"
         )
     return output
 
@@ -684,13 +697,99 @@ class Finding:
     message: str
 
 
-def _is_release_path(dataset: Dataset, repo_path: str) -> bool:
+def _is_release_path(
+    dataset: Dataset, repo_path: str, renamed_paths: Collection[str] = ()
+) -> bool:
     """Whether a repo-relative path is a file a release of ``dataset`` may stage."""
+    if repo_path in renamed_paths:
+        return True
     path = PurePosixPath(repo_path)
     root = PurePosixPath(DATA_DIR, dataset.name)
     if root not in path.parents:
         return False
     return path == root / METADATA_FILE or path.suffix == ".dvc" or path.name == ".gitignore"
+
+
+def _is_unreleased_metadata(metadata: dict[str, Any]) -> bool:
+    hashes = metadata.get("hashes")
+    return (
+        metadata.get("version") is None
+        and not metadata.get("changelog")
+        and isinstance(hashes, dict)
+        and all(value is None for value in hashes.values())
+    )
+
+
+def _find_renamed_release_paths(dataset: Dataset, log: Log) -> set[str]:
+    """Find control-file deletions of one unambiguous, unpublished dataset rename."""
+    head_paths = set(
+        run_git(
+            dataset.repo, "ls-tree", "-r", "--name-only", "HEAD", "--", DATA_DIR, log=log
+        ).splitlines()
+    )
+    if dataset.relative(dataset.metadata_path) in head_paths:
+        return set()
+
+    # Metrics may be edited with the rename; published identity must remain empty.
+    new_datasets: list[tuple[Dataset, dict[str, Any]]] = []
+    for candidate in find_datasets(dataset.repo):
+        if candidate.relative(candidate.metadata_path) in head_paths or candidate.root.is_symlink():
+            continue
+        try:
+            metadata = read_metadata(candidate.metadata_path)
+        except (OSError, ReleaseError):
+            continue
+        if metadata.get("name") == candidate.name and _is_unreleased_metadata(metadata):
+            identity = {
+                key: value for key, value in metadata.items() if key not in {"name", "metrics"}
+            }
+            new_datasets.append((candidate, identity))
+    if not any(candidate == dataset for candidate, _ in new_datasets):
+        return set()
+
+    matches: list[set[str]] = []
+    for relative in sorted(head_paths):
+        path = PurePosixPath(relative)
+        if path.name != METADATA_FILE or path.parent.parent != PurePosixPath(DATA_DIR):
+            continue
+        previous = Dataset(dataset.repo, path.parent.name)
+        if previous.root.exists() or previous.root.is_symlink():
+            continue
+        old_paths = {name for name in head_paths if path.parent in PurePosixPath(name).parents}
+        allowed = {previous.relative(file) for file in _find_release_files(previous)}
+        if not old_paths <= allowed:
+            continue
+        try:
+            metadata = parse_metadata(
+                run_git(dataset.repo, "show", f"HEAD:{relative}", log=log), relative
+            )
+        except ReleaseError:
+            continue
+        if metadata.get("name") != previous.name or not _is_unreleased_metadata(metadata):
+            continue
+        identity = {
+            key: value for key, value in metadata.items() if key not in {"name", "metrics"}
+        }
+        matching_datasets: list[Dataset] = []
+        for candidate, candidate_identity in new_datasets:
+            if candidate_identity != identity:
+                continue
+            for old_path in sorted(old_paths):
+                if PurePosixPath(old_path).name != ".gitignore":
+                    continue
+                replacement = candidate.root / PurePosixPath(old_path).relative_to(path.parent)
+                if not replacement.is_file() or run_git(
+                    dataset.repo, "hash-object", "--", candidate.relative(replacement), log=log
+                ) != run_git(dataset.repo, "rev-parse", f"HEAD:{old_path}", log=log):
+                    break
+            else:
+                matching_datasets.append(candidate)
+        # A deleted dataset must not be claimed by two newly created datasets.
+        if dataset in matching_datasets:
+            if len(matching_datasets) != 1:
+                return set()
+            matches.append(old_paths)
+    return matches[0] if len(matches) == 1 else set()
 
 
 def check_change(change: str) -> list[Finding]:
@@ -852,10 +951,14 @@ def check_repository(dataset: Dataset, log: Log) -> list[Finding]:
     # The second diff catches a change staged and then reverted in the working tree.
     changed = {
         path
-        for arguments in (("diff", "--name-only", "HEAD"), ("diff", "--cached", "--name-only"))
+        for arguments in (
+            ("diff", "--no-renames", "--name-only", "HEAD"),
+            ("diff", "--no-renames", "--cached", "--name-only"),
+        )
         for path in run_git(dataset.repo, *arguments, log=log).splitlines()
     }
-    foreign = sorted(path for path in changed if not _is_release_path(dataset, path))
+    renamed_paths = _find_renamed_release_paths(dataset, log)
+    foreign = sorted(path for path in changed if not _is_release_path(dataset, path, renamed_paths))
     if foreign:
         findings.append(
             Finding(
@@ -1160,22 +1263,23 @@ def _release_lock(repo: Path) -> Iterator[None]:
         yield
 
 
-def _find_release_files(dataset: Dataset) -> list[Path]:
-    """Every file a release may write: metadata, pointers and DVC's .gitignore files."""
-    return [
-        dataset.metadata_path,
-        *(pointer_path(unit_dir) for unit_dir in dataset.unit_dirs),
-        dataset.root / ".gitignore",
-        dataset.root / SAMPLES_DIR / ".gitignore",
-    ]
-
-
-def _find_stage_paths(dataset: Dataset, log: Log) -> list[str]:
+def _find_stage_paths(
+    dataset: Dataset, log: Log, renamed_paths: Collection[str] = ()
+) -> list[str]:
     """List the repo-relative paths step 5 stages: existing or tracked release files."""
+    previous_roots = {dataset.repo / Path(*PurePosixPath(path).parts[:2]) for path in renamed_paths}
+    if any(root.exists() or root.is_symlink() for root in previous_roots):
+        raise ReleaseError("the previous dataset directory reappeared during release; check again")
     candidates = _find_release_files(dataset)
     relative = [dataset.relative(path) for path in candidates]
-    tracked = set(run_git(dataset.repo, "ls-files", "--", *relative, log=log).splitlines())
-    return [rel for rel, path in zip(relative, candidates) if path.exists() or rel in tracked]
+    tracked = set(
+        run_git(
+            dataset.repo, "ls-files", "--", *relative, *sorted(renamed_paths), log=log
+        ).splitlines()
+    )
+    return [rel for rel, path in zip(relative, candidates) if path.exists() or rel in tracked] + sorted(
+        tracked.intersection(renamed_paths)
+    )
 
 
 def _is_local_release(dataset: Dataset, version: str) -> bool:
@@ -1262,7 +1366,12 @@ def build_record(dataset: Dataset, version: str, released_by: str, log: Log) -> 
 
 
 def _release_rollback(
-    dataset: Dataset, version: str, head: str, snapshot: dict[Path, Optional[bytes]], log: Log
+    dataset: Dataset,
+    version: str,
+    head: str,
+    snapshot: dict[Path, Optional[bytes]],
+    log: Log,
+    staged_tree: Optional[str] = None,
 ) -> None:
     """Undo steps 3-6: the tag, the commit and every release file.
 
@@ -1276,6 +1385,8 @@ def _release_rollback(
             run_git(dataset.repo, "tag", "-d", tag, log=log)
         # A mixed reset drops the commit and the staged files, never the data.
         run_git(dataset.repo, "reset", "-q", head, log=log)
+        if staged_tree is not None:
+            run_git(dataset.repo, "read-tree", staged_tree, log=log)
     except ReleaseError as error:
         log(f"could not undo the release commit: {error}")
     for path, content in snapshot.items():
@@ -1297,6 +1408,9 @@ def _release_commit(
 ) -> None:
     """Steps 3-6: build the local release commit and tag, or leave no trace."""
     head = run_git(dataset.repo, "rev-parse", "HEAD", log=log)
+    # Metadata gains a version in step 4, so identify the rename before any writes.
+    renamed_paths = _find_renamed_release_paths(dataset, log)
+    staged_tree = run_git(dataset.repo, "write-tree", log=log)
     snapshot = {
         path: path.read_bytes() if path.is_file() else None
         for path in _find_release_files(dataset)
@@ -1324,14 +1438,17 @@ def _release_commit(
 
         step = 5
         on_step(5, STEP_RUNNING)
-        run_git(dataset.repo, "add", "-A", "--", *_find_stage_paths(dataset, log), log=log)
-        foreign = [
-            path
-            for path in run_git(
-                dataset.repo, "diff", "--cached", "--name-only", log=log
-            ).splitlines()
-            if not _is_release_path(dataset, path)
-        ]
+        run_git(
+            dataset.repo, "add", "-A", "--", *_find_stage_paths(dataset, log, renamed_paths), log=log
+        )
+        staged = run_git(
+            dataset.repo, "diff", "--no-renames", "--cached", "--name-status", log=log
+        )
+        foreign = []
+        for line in staged.splitlines():
+            status, _, path = line.partition("\t")
+            if not _is_release_path(dataset, path, renamed_paths if status == "D" else ()):
+                foreign.append(path)
         if foreign:
             raise ReleaseError(
                 f"the staging area gained changes outside this release: {foreign[:5]}"
@@ -1346,7 +1463,7 @@ def _release_commit(
         on_step(6, STEP_DONE)
     except Exception:
         on_step(step, STEP_FAILED)
-        _release_rollback(dataset, version, head, snapshot, log)
+        _release_rollback(dataset, version, head, snapshot, log, staged_tree)
         raise
 
 

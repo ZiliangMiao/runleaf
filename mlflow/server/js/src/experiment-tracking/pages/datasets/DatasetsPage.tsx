@@ -7,6 +7,7 @@ import { useCallback, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Alert,
+  AutoComplete,
   Button,
   Checkbox,
   Header,
@@ -111,7 +112,11 @@ const DatasetsTable = ({
                 </Button>
               </TableCell>
               <TableCell>
-                <Tag componentId="mlflow.datasets.list.status" color={STATUS_COLORS[dataset.status]} css={{ margin: 0 }}>
+                <Tag
+                  componentId="mlflow.datasets.list.status"
+                  color={STATUS_COLORS[dataset.status]}
+                  css={{ margin: 0 }}
+                >
                   {dataset.status}
                 </Tag>
               </TableCell>
@@ -200,7 +205,7 @@ const DatasetCreateModal = ({
         .split(',')
         .map((metric) => metric.trim())
         .filter(Boolean);
-      await createDataset(repo, name, source.trim(), metricNames);
+      await createDataset(repo.trim(), name, source.trim(), metricNames);
       onCreated(name);
     } catch (createError) {
       setError(getErrorMessage(createError));
@@ -216,7 +221,7 @@ const DatasetCreateModal = ({
       title="Create dataset"
       okText="Create"
       cancelText="Cancel"
-      okButtonProps={{ disabled: submitting || !repo || !nameIsValid || !source.trim() }}
+      okButtonProps={{ disabled: submitting || !repo.trim() || !nameIsValid || !source.trim() }}
       onCancel={onClose}
       onOk={handleCreate}
     >
@@ -227,14 +232,28 @@ const DatasetCreateModal = ({
       <label htmlFor="dataset-create-repo" css={fieldStyles}>
         Git repository
       </label>
-      <LegacySelect
-        id="dataset-create-repo"
-        aria-label="Git repository"
+      <AutoComplete
         value={repo}
         onChange={(value: string) => setRepo(value)}
         options={repos.map((path) => ({ value: path, label: path }))}
+        filterOption={(input, option) =>
+          String(option?.value ?? '')
+            .toLowerCase()
+            .includes(input.toLowerCase())
+        }
         css={{ width: '100%' }}
-      />
+      >
+        <Input
+          id="dataset-create-repo"
+          componentId="mlflow.datasets.create.repo"
+          aria-label="Git repository"
+          aria-describedby="dataset-create-repo-hint"
+          placeholder="Select or enter an absolute repository path"
+        />
+      </AutoComplete>
+      <Typography.Hint id="dataset-create-repo-hint">
+        Enter an existing Git repository on the MLflow server. The directory must be accessible to the server.
+      </Typography.Hint>
       <label htmlFor="dataset-create-name" css={fieldStyles}>
         Name
       </label>
@@ -286,7 +305,8 @@ const DatasetCreateModal = ({
 const LIFECYCLE_ACTIONS = {
   delete: {
     label: 'Delete',
-    confirm: 'removes its directory and its registration. The dataset was never released, so nothing else refers to it.',
+    confirm:
+      'removes its directory and its registration. The dataset was never released, so nothing else refers to it.',
     run: deleteDataset,
   },
   archive: {
@@ -469,7 +489,7 @@ const DatasetDetails = ({
             {dataset.repo ? (
               `${dataset.repo}/data/${dataset.name}`
             ) : (
-              <Typography.Hint>Not in a configured repository</Typography.Hint>
+              <Typography.Hint>Repository is unavailable</Typography.Hint>
             )}
           </MetadataField>
           <MetadataField label="Released by">
@@ -537,7 +557,7 @@ const DatasetDetails = ({
 
 // ===== Page =====
 
-/** List the datasets of the configured repositories and release new versions of them. */
+/** List the datasets of known repositories and release new versions of them. */
 const DatasetsPage = () => {
   const queryClient = useQueryClient();
   const [refreshing, setRefreshing] = useState(false);
@@ -592,7 +612,7 @@ const DatasetsPage = () => {
             <Button
               componentId="mlflow.datasets.create.open"
               type="primary"
-              disabled={!datasets.data?.repos.length}
+              disabled={datasets.isLoading || Boolean(datasets.error)}
               onClick={() => setCreating(true)}
             >
               Create dataset
@@ -639,8 +659,8 @@ const DatasetsPage = () => {
                 componentId="mlflow.datasets.no_repos"
                 type="info"
                 closable={false}
-                message="No dataset repository is configured"
-                description="Set DEEPLORE_DATASET_REPOS on the tracking server to the dataset repository roots."
+                message="No dataset repositories yet"
+                description="Create a dataset and enter the path of an existing Git repository on the MLflow server."
               />
               <Spacer shrinks={false} />
             </>
@@ -649,7 +669,7 @@ const DatasetsPage = () => {
             <DatasetsTable datasets={listed} selectedName={selected?.name} onSelect={handleSelected} />
           )}
           {listed.length === 0 && Boolean(datasets.data?.repos.length) && (
-            <Typography.Hint>No datasets found in the configured repositories.</Typography.Hint>
+            <Typography.Hint>No datasets found in the known repositories.</Typography.Hint>
           )}
           <Spacer shrinks={false} />
           {selected && (
