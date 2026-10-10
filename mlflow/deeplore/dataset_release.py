@@ -24,9 +24,12 @@ A release runs steps 2-8 (step 1 is the caller supplying ``version``,
     3 dvc add    one unit per existing directory; a deleted unit loses its pointer
     4 metadata   version, changelog entry and split hashes into metadata.yaml
     5 git add    only metadata.yaml, .dvc pointers and DVC's .gitignore files
-    6 commit     ``dataset(<name>): release <version>, <change>`` plus an annotated tag
+    6 commit     those paths as ``dataset(<name>): release <version>, <change>``, plus a tag
     7 push       ``dvc push`` first, then an atomic ``git push`` of branch and tag
     8 register   metadata read back from the tag's commit goes to MLflow
+
+Uncommitted changes may sit only under ``data/``. Another dataset's changes,
+staged or not, stay out of the commit and wait for that dataset's own release.
 
 A unit (``assets``, ``annotations`` or a split) is deleted only when the
 caller lists it: a directory that is merely absent, e.g. in a clone that never
@@ -697,19 +700,6 @@ class Finding:
     message: str
 
 
-def _is_release_path(
-    dataset: Dataset, repo_path: str, renamed_paths: Collection[str] = ()
-) -> bool:
-    """Whether a repo-relative path is a file a release of ``dataset`` may stage."""
-    if repo_path in renamed_paths:
-        return True
-    path = PurePosixPath(repo_path)
-    root = PurePosixPath(DATA_DIR, dataset.name)
-    if root not in path.parents:
-        return False
-    return path == root / METADATA_FILE or path.suffix == ".dvc" or path.name == ".gitignore"
-
-
 def _is_unreleased_metadata(metadata: dict[str, Any]) -> bool:
     hashes = metadata.get("hashes")
     return (
@@ -908,6 +898,9 @@ def _find_remote_head(repo: Path, log: Log) -> tuple[Optional[str], Optional[str
 def check_repository(dataset: Dataset, log: Log) -> list[Finding]:
     """Check the repository can take the release commit and push it.
 
+    Only ``data/`` may hold uncommitted changes, staged or not: each dataset's
+    directory is committed by that dataset's own release, never by this one.
+
     Args:
         dataset: The dataset being released.
         log: Receives git command output.
@@ -957,14 +950,14 @@ def check_repository(dataset: Dataset, log: Log) -> list[Finding]:
         )
         for path in run_git(dataset.repo, *arguments, log=log).splitlines()
     }
-    renamed_paths = _find_renamed_release_paths(dataset, log)
-    foreign = sorted(path for path in changed if not _is_release_path(dataset, path, renamed_paths))
+    data_dir = PurePosixPath(DATA_DIR)
+    foreign = sorted(path for path in changed if data_dir not in PurePosixPath(path).parents)
     if foreign:
         findings.append(
             Finding(
                 LEVEL_ERROR,
                 "git",
-                f"{len(foreign)} tracked file(s) outside this release have uncommitted changes, "
+                f"{len(foreign)} tracked file(s) outside {DATA_DIR}/ have uncommitted changes, "
                 f"e.g. {', '.join(foreign[:5])}; commit or revert them first",
             )
         )
@@ -1438,27 +1431,29 @@ def _release_commit(
 
         step = 5
         on_step(5, STEP_RUNNING)
-        run_git(
-            dataset.repo, "add", "-A", "--", *_find_stage_paths(dataset, log, renamed_paths), log=log
-        )
+        stage_paths = _find_stage_paths(dataset, log, renamed_paths)
+        run_git(dataset.repo, "add", "-A", "--", *stage_paths, log=log)
+        # A rename staged beforehand already dropped its old paths from the index.
+        commit_paths = sorted({*stage_paths, *renamed_paths})
         staged = run_git(
-            dataset.repo, "diff", "--no-renames", "--cached", "--name-status", log=log
+            dataset.repo, "diff", "--no-renames", "--cached", "--name-status", "--", *commit_paths,
+            log=log,
         )
-        foreign = []
+        # A renamed dataset's old paths may only leave with this release.
         for line in staged.splitlines():
             status, _, path = line.partition("\t")
-            if not _is_release_path(dataset, path, renamed_paths if status == "D" else ()):
-                foreign.append(path)
-        if foreign:
-            raise ReleaseError(
-                f"the staging area gained changes outside this release: {foreign[:5]}"
-            )
+            if path in renamed_paths and status != "D":
+                raise ReleaseError(
+                    "the previous dataset directory reappeared during release; check again"
+                )
         on_step(5, STEP_DONE)
 
         step = 6
         on_step(6, STEP_RUNNING)
         commit = ["commit", "-m", f"dataset({dataset.name}): release {version}, {change}"]
-        run_git(dataset.repo, *commit, *(["--no-verify"] if skip_hooks else []), log=log)
+        hooks = ["--no-verify"] if skip_hooks else []
+        # By path: whatever else is staged, e.g. another dataset's edits, stays staged.
+        run_git(dataset.repo, *commit, *hooks, "--", *commit_paths, log=log)
         run_git(dataset.repo, "tag", "-a", dataset.tag(version), "-m", change, log=log)
         on_step(6, STEP_DONE)
     except Exception:
@@ -1640,15 +1635,18 @@ def release_archive(
         _check_archive_repository(dataset, log)
 
         head = run_git(dataset.repo, "rev-parse", "HEAD", log=log)
+        staged_tree = run_git(dataset.repo, "write-tree", log=log)
         relative = dataset.relative(dataset.root)
         commit = ["commit", "-m", f"dataset({name}): archive"]
+        hooks = ["--no-verify"] if skip_hooks else []
         try:
             run_git(dataset.repo, "rm", "-r", "-q", "--", relative, log=log)
-            run_git(dataset.repo, *commit, *(["--no-verify"] if skip_hooks else []), log=log)
+            run_git(dataset.repo, *commit, *hooks, "--", relative, log=log)
             run_git(dataset.repo, "push", "origin", "HEAD", log=log)
         except ReleaseError:
-            # Nothing was published: bring the commit and the tracked files back.
+            # Nothing was published: bring the commit, the index and the tracked files back.
             run_git(dataset.repo, "reset", "-q", head, log=log)
+            run_git(dataset.repo, "read-tree", staged_tree, log=log)
             run_git(dataset.repo, "checkout", "--", relative, log=log)
             raise
         # What is left is data DVC ignores; the cache and the remote keep it.
@@ -1681,14 +1679,17 @@ def release_unarchive(
         _check_archive_repository(dataset, log)
 
         head = run_git(dataset.repo, "rev-parse", "HEAD", log=log)
+        staged_tree = run_git(dataset.repo, "write-tree", log=log)
         relative = dataset.relative(dataset.root)
         message = ["commit", "-m", f"dataset({name}): unarchive"]
+        hooks = ["--no-verify"] if skip_hooks else []
         try:
             run_git(dataset.repo, "checkout", commit, "--", relative, log=log)
-            run_git(dataset.repo, *message, *(["--no-verify"] if skip_hooks else []), log=log)
+            run_git(dataset.repo, *message, *hooks, "--", relative, log=log)
             run_git(dataset.repo, "push", "origin", "HEAD", log=log)
         except ReleaseError:
             run_git(dataset.repo, "reset", "-q", head, log=log)
+            run_git(dataset.repo, "read-tree", staged_tree, log=log)
             shutil.rmtree(dataset.root, ignore_errors=True)
             raise
         try:
