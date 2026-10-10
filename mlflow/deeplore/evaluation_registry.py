@@ -276,8 +276,19 @@ def validate_dataset_test(
     return released
 
 
-def validate_metrics(released: dict[str, Any], metrics: dict[str, Any]) -> None:
-    """Require every metric the dataset version declares.
+CATEGORY_METRICS = frozenset({
+    "AP", "AP_50", "AP_75", "AP_s", "AP_m", "AP_l", "AR_10", "AR_100",
+    "per_class_AP",
+})
+
+
+def validate_metrics(
+    released: dict[str, Any],
+    metrics: dict[str, Any],
+    *,
+    class_agnostic: bool = False,
+) -> None:
+    """Require declared metrics that apply to the evaluation's training mode.
 
     A declared name is recorded by a metric of that name or by a family of
     ``<name>/<member>`` metrics, e.g. ``per_class_AP/<category>``.
@@ -285,11 +296,26 @@ def validate_metrics(released: dict[str, Any], metrics: dict[str, Any]) -> None:
     Args:
         released: The registered dataset version.
         metrics: The evaluation's metrics.
+        class_agnostic: Whether the source detector was trained without categories.
 
     Raises:
-        MlflowException: If a declared metric is absent.
+        MlflowException: If an applicable metric is absent or a class-agnostic
+            evaluation includes a category-dependent metric.
     """
     declared = released["metadata"].get("metrics") or []
+    if class_agnostic:
+        unsupported = sorted(
+            name for name in metrics if name.split("/", 1)[0] in CATEGORY_METRICS
+        )
+        if unsupported:
+            raise _invalid(
+                "class-agnostic evaluations cannot include category-dependent "
+                f"metrics: {', '.join(unsupported)}"
+            )
+        declared = [
+            name for name in declared
+            if not isinstance(name, str) or name.split("/", 1)[0] not in CATEGORY_METRICS
+        ]
     missing = [
         name
         for name in declared
@@ -357,6 +383,8 @@ def _validate_record(record: dict[str, Any]) -> dict[str, Any]:
             )
         if isinstance(value, float) and not math.isfinite(value):
             raise _invalid(f"parameter {key!r} must be finite")
+    if "class_agnostic" in parameters and type(parameters["class_agnostic"]) is not bool:
+        raise _invalid("parameter 'class_agnostic' must be a boolean")
     fields["params_json"] = _validate_json(parameters, "params")
 
     return fields
@@ -454,7 +482,11 @@ def create_evaluation(
     released = validate_dataset_test(
         store, fields["dataset_name"], fields["dataset_version"], dataset_hash
     )
-    validate_metrics(released, record["metrics"])
+    validate_metrics(
+        released,
+        record["metrics"],
+        class_agnostic=record.get("params", {}).get("class_agnostic", False),
+    )
     evidence = {
         "source": "dataset_release" if released["git_commit"] else "dataset_history",
         "name": released["name"],
