@@ -75,7 +75,7 @@ SemVer (Semantic Versioning) 版本号定义为vX.Y.Z, [参考](https://semver.o
     |metadata.yaml|数据集的元数据.|具体字段见版本发布流程第4步. `name`, `source`, `metrics`由创建流程写入, 其中`name`不可修改, `source`和`metrics`可以在yaml文件中人工修改, 随下一次发布生效. `version`, `hashes`, `changelog`只由发布流程写入, 禁止人工修改. 发布时整个文件作为快照登记到mlflow dataset.|
     |assets/|原始数据, 以及对原始数据处理后需要保存的数据.|对子文件夹命名和结构不做要求, 可以是images, videos, frames, crops, etc. 只要保持命名简洁无歧义, 文件夹之间的界限清晰即可. 如果全部数据都嵌入samples, 允许assets为空.|
     |assets.dvc|用dvc对assets目录计算hash, 默认使用md5算法.|无要求, dvc自动生成.|
-    |annotations/|汇总用于训练或评估的samples之前的标注原始数据, 或标注数据处理产生的中间文件. 对于无人工标注的数据集, 允许不存在annotations/及其dvc文件.|对子文件夹命名及结构不做要求. 可以与assets原始数据一一对应保存标注文件, 也可以合并文件, 或创建子文件夹分项保存.|
+    |annotations/|汇总用于训练或评估的samples之前的标注原始数据, 或标注数据处理产生的中间文件. 无效图片的判定清单也保存在此目录. 对于既无标注也无无效图片判定的数据集, 允许不存在annotations/及其dvc文件.|对子文件夹命名及结构不做要求. 可以与assets原始数据一一对应保存标注文件, 也可以合并文件, 或创建子文件夹分项保存. 无效图片及其已有标注的保留规则见下文.|
     |annotations.dvc|annotations目录的dvc文件.|无要求, dvc自动生成.|
     |samples/|合并后的供训练或评估用的完整样本集合. 可选包含train set, validation set, test set, 可以表示完整数据集, 也可以表示只用于训练, 验证, 或只用于评估的数据集.|样本文件和`_reference.json`必须由build脚本生成, 禁止人工修改. build脚本输入可以包含assets和按需存在的annotations. 生成结果应保持确定性, 不写入构建时间或整体数据集版本号等与样本内容无关的信息.<br>样本文件引用`samples/`外部的文件时, 一律写相对数据集根目录的路径, 以`assets/`或`annotations/`开头, 禁止绝对路径和跨数据集引用.<br>train, val, test之间不得引用相同的文件.|
     |samples/train/|可选. train set, 用于训练的完整样本集合.|如果用单个json文件, 则命名为`data.json`, 如果因为文件规模等原因, 需要拆分子json文件, 则使用`shard_000000.json`格式命名, 分片编号0填充, 不限制位数, [参考](https://huggingface.co/docs/hub/datasets-file-names-and-splits).<br>每个集合必须包含`_reference.json`, 用于记录读取该集合样本时, 还需要额外读取的samples目录外部文件, 以及每个文件的hash摘要. `files`写相对数据集根目录的路径, 必须与样本文件中出现的外部路径完全一致. 结构如下:<br>`{"hash": "md5", "files": {"assets/images/image-0001.jpg": "<file hash>", "annotations/masks/image-0001.mask.jpg": "<file hash>"}}`<br>没有外部文件读取依赖时, 保留`"files": {}`即可.|
@@ -84,6 +84,28 @@ SemVer (Semantic Versioning) 版本号定义为vX.Y.Z, [参考](https://semver.o
     |samples/val.dvc|可选. validation set的dvc文件, hash摘要.|无要求, dvc自动生成.|
     |samples/test/|可选. test set, 作为benchmark, 用于模型评估的样本集合.|同train.|
     |samples/test.dvc|可选. test set的dvc文件, hash摘要.|无要求, dvc自动生成.|
+
+### 无效图片保留与样本排除
+
+1. `assets/images/`保留属于该数据集的原始图片, 包括有效和无效图片. 已有逐图标注保留在`annotations/`的对应目录, 如`annotations/jsons/`或`annotations/images/`. 无效判定不应通过删除原图或标注来表达, 也不应将无效数据长期存放在`backup/`. 无标注的无效图片只登记判定, 不补造标注.
+
+2. `annotations/invalid_registry.json`是无效图片判定的权威清单, 格式为`{相对图片目录: {完整文件名: 判定原因}}`. 目录相对于`assets/images/`, 图片直接位于该目录时使用`"."`. 必须保留完整相对路径和扩展名, 不得只按文件名匹配. 例如:
+
+    ```json
+    {
+      "Heniochus monoceros": {
+        "569346432.jpeg": "human_invalid"
+      }
+    }
+    ```
+
+3. **所有构建samples的脚本必须读取无效清单, 在验证和合并逐图标注之前显式排除对应图片.** 图片即使存在完整标注, 也不得进入任何samples集合. 从旧samples恢复集合成员时, 必须同步扣除无效图片, 不能依赖图片被移走或标注缺失来间接排除. 没有无效判定时可以省略清单; 清单存在但格式错误时必须报错, 禁止忽略后继续构建.
+
+4. 无效图片及其相关标注不得出现在生成的samples中, `_reference.json`也不得引用被排除的图片. 无效清单作为构建输入随`annotations/`保存, 不因构建时读取而自动成为samples的运行时外部文件依赖. 原图和原始标注保持不变.
+
+5. 从backup迁回无效数据时, 根据数据集归属恢复原始相对路径, 图片和已有逐图标注作为一对处理. 迁移前后校验文件内容, 同路径同内容的副本可以合并, 内容冲突必须保留并核查, 禁止覆盖. 同一无效图片的不同历史标注保存在`annotations/invalid_history/`, 按其原backup相对路径区分来源, 不参与逐图标注合并. backup中的完整历史快照和其他有效数据不按无效图片迁移.
+
+6. 无效图片, 已有标注和无效清单分别随`assets/`与`annotations/`参与数据版本控制 (Data Version Control, DVC) 入库和数据集版本发布. 先通过构建验证, 确认所有samples均不含无效图片; `.dvc`指针和版本元数据仍由正常发布流程更新, 不手工改写.
 
 ## 数据集创建流程
 
@@ -153,7 +175,7 @@ SemVer (Semantic Versioning) 版本号定义为vX.Y.Z, [参考](https://semver.o
 
 3. dvc入库.
 
-    对本次发布包含的目录分别执行`dvc add`. 对删除清单中的目录, 同步删除其`.dvc`文件和`.gitignore`中的对应条目 (`dvc remove`).
+    每次发布数据集版本时, 对本次发布包含且实际存在的`assets/`, `annotations/`和各`samples/<set>/`目录分别执行`dvc add`, 同步为当前版本重新构建对应的`.dvc`指针文件, 包括`assets.dvc`和`annotations.dvc`. 目录内容未变化时, 对应的hash保持不变. 对删除清单中的目录, 同步删除其`.dvc`文件和`.gitignore`中的对应条目 (`dvc remove`).
 
     以下示例假设五个目录都存在:
 
