@@ -276,9 +276,10 @@ def validate_dataset_test(
     return released
 
 
+# ar_10 / ar_100: retired class-aware recall that old dataset versions declare.
 CATEGORY_METRICS = frozenset({
-    "AP", "AP_50", "AP_75", "AP_s", "AP_m", "AP_l", "AR_10", "AR_100",
-    "per_class_AP",
+    "ap", "ap_50", "ap_75", "ap_s", "ap_m", "ap_l", "ap_class",
+    "ar_10", "ar_100",
 })
 
 
@@ -291,7 +292,7 @@ def validate_metrics(
     """Require declared metrics that apply to the evaluation's training mode.
 
     A declared name is recorded by a metric of that name or by a family of
-    ``<name>/<member>`` metrics, e.g. ``per_class_AP/<category>``.
+    ``<name>/<member>`` metrics, e.g. ``ap_class/<category>``.
 
     Args:
         released: The registered dataset version.

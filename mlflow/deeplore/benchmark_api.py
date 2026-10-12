@@ -71,7 +71,7 @@ def _add_dataset(
             for metric in metrics
             if isinstance(metric, str)
             and metric
-            and metric not in ("per_class_AP", "per_class_AP/")
+            and metric not in ("ap_class", "ap_class/")
             and "*" not in metric
         )
 
