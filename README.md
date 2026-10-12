@@ -200,7 +200,7 @@ SemVer (Semantic Versioning) 版本号定义为vX.Y.Z, [参考](https://semver.o
       train: "<train md5>.dir"
       val: "<val md5>.dir"
       test: null
-    metrics: ["AP_agn", "AP", "AP_75", "AP_s", "AP_m", "AP_l"]
+    metrics: ["ap_agn", "ap", "ap_75", "ap_s", "ap_m", "ap_l"]
     changelog:      # append change of each dataset version
       - v1.0.0: initial in-domain test split (carved from pool by rule X)
       - v1.1.0: +320 crowd-scene frames
@@ -210,7 +210,7 @@ SemVer (Semantic Versioning) 版本号定义为vX.Y.Z, [参考](https://semver.o
 
     `metadata.yaml`不重复登记`assets/`或`annotations/`的目录hash. 这两个目录的历史快照通过对应.dvc文件与git tag关联. 使用某个集合时, 校验该集合目录的hash, 并逐一校验其`_reference.json`所列资源的实际文件内容. 未被该集合读取的资源变化不影响校验结果.
 
-    `metrics`是该数据集作为benchmark时, 每条evaluation必须记录的指标, 也是Benchmarks页面默认展示的指标; 没有test集合的数据集允许填`[]`. 文件中不记录数据集目录: 目录由仓库根目录和`name`按约定推出, 写入绝对路径会让`metadata.yaml`无法在其他机器上使用.
+    `metrics`是该数据集作为benchmark时, 每条evaluation必须记录的指标, 也是Benchmarks页面默认展示的指标; 没有test集合的数据集允许填`[]`. 指标名称统一使用小写和下划线, 例如`ap_agn`, `afpr`, `ap_class`. 文件中不记录数据集目录: 目录由仓库根目录和`name`按约定推出, 写入绝对路径会让`metadata.yaml`无法在其他机器上使用.
 
 5. git入暂存区.
 
@@ -338,7 +338,7 @@ SemVer (Semantic Versioning) 版本号定义为vX.Y.Z, [参考](https://semver.o
     |model_path|被评估模型文件在该run的artifacts中的路径.|文件必须已经存在于该run的artifacts中.|
     |model_hash|被评估模型文件的hash摘要.|评估时实际加载的文件, md5必须与artifacts中该文件一致.|
     |params|dict. 该次evaluation使用的评估设置.|记录所有影响指标的设置, 例如输入尺寸, 置信度阈值, 非极大值抑制阈值, 推理后端. 同一个hash分组内参与比较的evaluations应使用相同的params.|
-    |metrics|dict. 该次evaluation记录的指标.|必须包含该数据集`metrics`字段列出的全部指标, 可以多, 不能少.|
+    |metrics|dict. 该次evaluation记录的指标.|必须包含该数据集`metrics`字段列出的全部指标, 可以多, 不能少. `params`中`class_agnostic`为true的evaluation例外: 依赖类别的指标 (`ap`, `ap_50`, `ap_75`, `ap_s`, `ap_m`, `ap_l`, `ap_class`, 以及旧版本数据集声明的`ar_10`, `ar_100`) 不要求记录, 也不允许记录. `ap_class`这类指标以`ap_class/<category>`的形式逐类记录.|
 
 2. 展示: mlflow run页面内, overview右侧evaluations为入口, 按照dataset组织所有evaluations记录.
 
