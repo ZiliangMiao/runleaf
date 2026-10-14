@@ -43,12 +43,9 @@ const splitTag = (value?: string): string[] =>
     .map((part) => part.trim())
     .filter(Boolean);
 
-/** Match deeplore_core's project field in valid <project>-<suffix> experiment names. */
-export const buildExperimentProject = (name: string): string | undefined => {
-  const separator = name.indexOf('-');
-  const project = name.slice(0, separator);
-  return separator > 0 && !/\s/.test(project) && name.slice(separator + 1).trim() ? project : undefined;
-};
+/** Read the project that owns an experiment from its `project` tag; an experiment name implies none. */
+export const buildExperimentProject = (experiment: Pick<ExperimentEntity, 'tags'>): string | undefined =>
+  experiment.tags?.find((tag) => tag.key === 'project')?.value || undefined;
 
 /** Read a run number from r12, a padded r012, or the leading field of a run name written before base_run held numbers. */
 export const buildRunNumber = (reference?: string): string | undefined => {
@@ -95,11 +92,14 @@ const buildLineageNode = (
 /** Resolve base_run numbers only when exactly one active run in the same project carries them. */
 export const buildLineageGraph = (
   runs: RunEntity[],
-  experiments: Pick<ExperimentEntity, 'experimentId' | 'name'>[],
+  experiments: Pick<ExperimentEntity, 'experimentId' | 'name' | 'tags'>[],
   metricValues: ReadonlyMap<string, number>,
   baseRuns: RunEntity[] = [],
 ): LineageGraph => {
   const experimentNames = new Map(experiments.map((experiment) => [experiment.experimentId, experiment.name]));
+  const experimentProjects = new Map(
+    experiments.map((experiment) => [experiment.experimentId, buildExperimentProject(experiment)]),
+  );
   const uniqueRuns = new Map(
     runs.filter((run) => run.info.lifecycleStage !== 'deleted').map((run) => [run.info.runUuid, run]),
   );
@@ -107,7 +107,7 @@ export const buildLineageGraph = (
     [...baseRuns, ...runs].filter((run) => run.info.lifecycleStage !== 'deleted').map((run) => [run.info.runUuid, run]),
   );
   const buildProjectKey = (run: RunEntity): string => {
-    const project = buildExperimentProject(experimentNames.get(run.info.experimentId) ?? '');
+    const project = experimentProjects.get(run.info.experimentId);
     return project ? `project:${project}` : `experiment:${run.info.experimentId}`;
   };
   const parentsByNumber = new Map<string, RunEntity[]>();

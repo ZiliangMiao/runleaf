@@ -15,15 +15,18 @@ import { GenericInputModal } from './GenericInputModal';
 import { CreateExperimentForm, EXP_NAME_FIELD, ARTIFACT_LOCATION } from './CreateExperimentForm';
 import { getExperimentNameValidator } from '../../../common/forms/validations';
 
-import { createExperimentApi, searchExperimentsApi } from '../../actions';
+import { searchExperimentsApi } from '../../actions';
 import { getExperiments } from '../../reducers/Reducers';
 import { withRouterNext } from '../../../common/utils/withRouterNext';
+import { createProjectExperiment } from '../projects/projectsApi';
 
 type CreateExperimentModalImplProps = {
   isOpen?: boolean;
   onClose: (...args: any[]) => any;
+  /** Registered project that will own the experiment. */
+  project: string;
   experimentNames: string[];
-  createExperimentApi: (...args: any[]) => any;
+  createProjectExperiment?: typeof createProjectExperiment;
   searchExperimentsApi: (...args: any[]) => any;
   navigate: NavigateFunction;
 };
@@ -33,15 +36,12 @@ export class CreateExperimentModalImpl extends Component<CreateExperimentModalIm
     // get values of input fields
     const experimentName = values[EXP_NAME_FIELD];
     const artifactLocation = values[ARTIFACT_LOCATION];
+    const create = this.props.createProjectExperiment ?? createProjectExperiment;
 
-    // Both createExperimentApi and searchExperimentsApi calls need to be fulfilled sequentially
-    // before redirecting the user to the newly created experiment page (history.push())
-    const response = await this.props.createExperimentApi(experimentName, artifactLocation);
+    // The experiment list must hold the new experiment before redirecting to its page.
+    const newExperimentId = await create(this.props.project, experimentName, artifactLocation);
     await this.props.searchExperimentsApi();
 
-    const {
-      value: { experiment_id: newExperimentId },
-    } = response;
     if (newExperimentId) {
       this.props.navigate(Routes.getExperimentPageRoute(newExperimentId));
     }
@@ -56,7 +56,7 @@ export class CreateExperimentModalImpl extends Component<CreateExperimentModalIm
     const { isOpen } = this.props;
     return (
       <GenericInputModal
-        title="Create Experiment"
+        title={`Create Experiment in ${this.props.project}`}
         okText="Create"
         isOpen={isOpen}
         handleSubmit={this.handleCreateExperiment}
@@ -76,7 +76,6 @@ const mapStateToProps = (state: any) => {
 };
 
 const mapDispatchToProps = {
-  createExperimentApi,
   searchExperimentsApi,
 };
 

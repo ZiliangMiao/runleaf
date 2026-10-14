@@ -11,6 +11,7 @@ import { DeepPartial } from 'redux';
 import { ReduxState } from '../../redux-types';
 import { ExperimentView } from './experiment-page/ExperimentView';
 import { ExperimentPage } from './experiment-page/ExperimentPage';
+import { QueryClient, QueryClientProvider } from '../../common/utils/reactQueryHooks';
 
 jest.mock('./experiment-page/ExperimentView', () => ({
   ExperimentView: jest.fn(() => <div />),
@@ -21,6 +22,10 @@ jest.mock('./experiment-page/ExperimentPage', () => ({
 }));
 
 jest.mock('./ExperimentListView', () => jest.fn(() => <div />));
+
+jest.mock('./projects/projectsApi', () => ({
+  fetchProjects: jest.fn(() => Promise.resolve([])),
+}));
 
 jest.mock('../actions', () => ({
   searchExperimentsApi: jest.fn(() => ({ type: 'searchExperimentsApi' })),
@@ -43,14 +48,16 @@ describe('HomePage', () => {
   };
   const renderPage = (initialPath = '/', state?: DeepPartial<ReduxState>) => {
     return render(
-      <Provider store={createMockStore({ ...defaultMockState, ...state })}>
-        <MemoryRouter initialEntries={[initialPath]}>
-          <Routes>
-            <Route path="/:experimentId" element={<HomePage />} />
-            <Route path="*" element={<HomePage />} />
-          </Routes>
-        </MemoryRouter>
-      </Provider>,
+      <QueryClientProvider client={new QueryClient()}>
+        <Provider store={createMockStore({ ...defaultMockState, ...state })}>
+          <MemoryRouter initialEntries={[initialPath]}>
+            <Routes>
+              <Route path="/:experimentId" element={<HomePage />} />
+              <Route path="*" element={<HomePage />} />
+            </Routes>
+          </MemoryRouter>
+        </Provider>
+      </QueryClientProvider>,
     );
   };
   beforeEach(() => {

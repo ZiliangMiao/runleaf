@@ -24,11 +24,9 @@ describe('CreateExperimentModal', () => {
     minimalProps = {
       isOpen: false,
       onClose: jest.fn(),
+      project: 'deepdet',
       experimentNames: [],
-      createExperimentApi: (experimentName: any, artifactLocation: any) => {
-        const response = { value: { experiment_id: fakeExperimentId } };
-        return Promise.resolve(response);
-      },
+      createProjectExperiment: jest.fn(() => Promise.resolve(fakeExperimentId)),
       searchExperimentsApi: () => Promise.resolve([]),
       navigate,
     };
@@ -46,6 +44,7 @@ describe('CreateExperimentModal', () => {
       artifactLocation: 'artifactLoc',
     });
 
+    expect(minimalProps.createProjectExperiment).toBeCalledWith('deepdet', 'myNewExp', 'artifactLoc');
     expect(navigate).toBeCalledWith(createMLflowRoutePath('/experiments/fakeExpId'));
   });
   test('handleCreateExperiment does not perform redirection if API requests fail', async () => {
@@ -56,7 +55,7 @@ describe('CreateExperimentModal', () => {
       },
       {
         ...minimalProps,
-        createExperimentApi: () => Promise.reject(new Error('CreateExperiment failed!')),
+        createProjectExperiment: () => Promise.reject(new Error('CreateExperiment failed!')),
       },
     ];
     const testPromises: any = [];

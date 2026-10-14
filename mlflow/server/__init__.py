@@ -133,14 +133,14 @@ def serve_get_logged_model_artifact(model_id: str):
     return get_logged_model_artifact_handler(model_id)
 
 
-# Deeplore: dataset version registry and release endpoints.
-from mlflow.deeplore.dataset_api import register_dataset_routes  # noqa: E402
-from mlflow.deeplore.evaluation_api import register_evaluation_routes  # noqa: E402
-from mlflow.deeplore.run_api import register_run_routes  # noqa: E402
+# Deeplore: datasets, evaluations and projects.
+from mlflow.deeplore.dataset_api import register_dataset_routes
+from mlflow.deeplore.evaluation_api import register_evaluation_routes
+from mlflow.deeplore.project_api import register_project_routes
 
 register_dataset_routes(app)
 register_evaluation_routes(app)
-register_run_routes(app)
+register_project_routes(app)
 
 
 # We expect the react app to be built assuming it is hosted at /static-files, so that requests for

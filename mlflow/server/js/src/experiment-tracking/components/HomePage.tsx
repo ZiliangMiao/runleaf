@@ -1,6 +1,7 @@
 /* eslint-disable react-hooks/rules-of-hooks */
 import { useEffect, useRef } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
+import { useQuery } from '@tanstack/react-query';
 import { ReduxState, type ThunkDispatch } from '../../redux-types';
 import { getExperimentApi, searchExperimentsApi, setCompareExperiments, setExperimentTagApi } from '../actions';
 import { Navigate, useParams } from '../../common/utils/RoutingUtils';
@@ -20,6 +21,7 @@ import { ExperimentPage } from './experiment-page/ExperimentPage';
 import { isExperimentLoggedModelsUIEnabled } from '../../common/utils/FeatureUtils';
 import { ExperimentPageTabName } from '../constants';
 import ExperimentPageTabs from '../pages/experiment-page-tabs/ExperimentPageTabs';
+import { fetchProjects } from './projects/projectsApi';
 
 const getExperimentActions = {
   setExperimentTagApi,
@@ -45,6 +47,7 @@ const HomePage = () => {
 
   const experimentIds = useExperimentIds();
   const experiments = useSelector((state: ReduxState) => values(state.entities.experimentsById));
+  const projects = useQuery(['deeplore-projects'], fetchProjects, { refetchOnWindowFocus: false });
 
   const hasExperiments = experiments.length > 0;
 
@@ -71,7 +74,12 @@ const HomePage = () => {
       <div css={{ display: 'flex', height: 'calc(100% - 60px)' }}>
         {/* Left sidebar containing experiment list */}
         <div css={{ height: '100%', paddingTop: 24, display: 'flex' }}>
-          <ExperimentListView activeExperimentIds={experimentIds || []} experiments={experiments} />
+          <ExperimentListView
+            activeExperimentIds={experimentIds || []}
+            experiments={experiments}
+            projects={projects.data}
+            onProjectsChange={projects.refetch}
+          />
         </div>
 
         {shouldRenderTabbedView && <ExperimentPageTabs />}

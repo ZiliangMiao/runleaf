@@ -1,8 +1,11 @@
 import React, { Component } from 'react';
-import { Theme } from '@emotion/react';
 import {
   Checkbox,
   CaretDownSquareIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
+  FolderIcon,
+  FolderOpenIcon,
   PlusCircleIcon,
   Input,
   PencilIcon,
@@ -15,39 +18,64 @@ import {
 } from '@databricks/design-system';
 import { List as VList, AutoSizer, ListRowRenderer } from 'react-virtualized';
 import 'react-virtualized/styles.css';
-import { Link, NavigateFunction } from '../../common/utils/RoutingUtils';
+import { Link } from '../../common/utils/RoutingUtils';
 import Routes from '../routes';
 import { CreateExperimentModal } from './modals/CreateExperimentModal';
 import { DeleteExperimentModal } from './modals/DeleteExperimentModal';
 import { RenameExperimentModal } from './modals/RenameExperimentModal';
+import { CreateProjectModal, DeleteProjectModal } from './projects/ProjectModals';
+import { getExperimentProject, type Project } from './projects/projectsApi';
 import { withRouterNext, WithRouterNextProps } from '../../common/utils/withRouterNext';
 import { ExperimentEntity } from '../types';
+
+// Experiments created outside any project are grouped under this key.
+const UNASSIGNED = '';
+
+type ListRow =
+  | {
+      kind: 'project';
+      name: string;
+      description?: string | null;
+      count: number;
+      registered: boolean;
+      collapsed: boolean;
+    }
+  | { kind: 'experiment'; experiment: ExperimentEntity };
 
 type Props = {
   activeExperimentIds: string[];
   experiments: ExperimentEntity[];
+  projects?: Project[];
+  onProjectsChange?: () => void;
 } & WithRouterNextProps &
   DesignSystemHocProps;
 
 type State = {
   checkedKeys: string[];
+  collapsedProjects: string[];
   hidden: boolean;
   searchInput: string;
-  showCreateExperimentModal: boolean;
+  createExperimentProject?: string;
+  showCreateProjectModal: boolean;
+  deleteProjectName?: string;
   showDeleteExperimentModal: boolean;
   showRenameExperimentModal: boolean;
   selectedExperimentId: string;
   selectedExperimentName: string;
 };
 
+/** Sidebar listing projects, each expanding to the experiments it owns. */
 export class ExperimentListView extends Component<Props, State> {
   list?: VList = undefined;
 
-  state = {
+  state: State = {
     checkedKeys: this.props.activeExperimentIds,
+    collapsedProjects: [],
     hidden: false,
     searchInput: '',
-    showCreateExperimentModal: false,
+    createExperimentProject: undefined,
+    showCreateProjectModal: false,
+    deleteProjectName: undefined,
     showDeleteExperimentModal: false,
     showRenameExperimentModal: false,
     selectedExperimentId: '0',
@@ -65,18 +93,65 @@ export class ExperimentListView extends Component<Props, State> {
     }
   };
 
-  filterExperiments = (searchInput: string) => {
-    const { experiments } = this.props;
-    const lowerCasedSearchInput = searchInput.toLowerCase();
-    return lowerCasedSearchInput === ''
-      ? this.props.experiments
-      : experiments.filter(({ name }) => name.toLowerCase().includes(lowerCasedSearchInput));
+  // ---- rows ----
+
+  /** Group experiments by project; a search keeps matching experiments and every experiment of a matching project. */
+  buildRows = (): ListRow[] => {
+    const { experiments, projects = [] } = this.props;
+    const { collapsedProjects, searchInput } = this.state;
+    const search = searchInput.toLowerCase();
+    const registered = new Map(projects.map((project) => [project.name, project]));
+    const groups = new Map<string, ExperimentEntity[]>(projects.map((project) => [project.name, []]));
+    for (const experiment of experiments) {
+      const key = getExperimentProject(experiment) ?? UNASSIGNED;
+      groups.set(key, [...(groups.get(key) ?? []), experiment]);
+    }
+    const names = [...groups.keys()].filter((name) => name !== UNASSIGNED).sort();
+    if (groups.get(UNASSIGNED)?.length) {
+      names.push(UNASSIGNED);
+    }
+
+    const rows: ListRow[] = [];
+    for (const name of names) {
+      const members = groups.get(name) ?? [];
+      const projectMatches = name !== UNASSIGNED && name.toLowerCase().includes(search);
+      const shown =
+        !search || projectMatches
+          ? members
+          : members.filter((experiment) => experiment.name.toLowerCase().includes(search));
+      if (search && !projectMatches && shown.length === 0) {
+        continue;
+      }
+      const collapsed = !search && collapsedProjects.includes(name);
+      rows.push({
+        kind: 'project',
+        name,
+        description: registered.get(name)?.description,
+        count: members.length,
+        registered: registered.has(name),
+        collapsed,
+      });
+      if (!collapsed) {
+        rows.push(...shown.map((experiment): ListRow => ({ kind: 'experiment', experiment })));
+      }
+    }
+    return rows;
   };
+
+  // ---- interactions ----
 
   handleSearchInputChange: React.ChangeEventHandler<HTMLInputElement> = (event) => {
     this.setState({
       searchInput: event.target.value,
     });
+  };
+
+  handleToggleProject = (name: string) => () => {
+    this.setState(({ collapsedProjects }) => ({
+      collapsedProjects: collapsedProjects.includes(name)
+        ? collapsedProjects.filter((project) => project !== name)
+        : [...collapsedProjects, name],
+    }));
   };
 
   updateSelectedExperiment = (experimentId: string, experimentName: string) => {
@@ -86,10 +161,8 @@ export class ExperimentListView extends Component<Props, State> {
     });
   };
 
-  handleCreateExperiment = () => {
-    this.setState({
-      showCreateExperimentModal: true,
-    });
+  handleCreateExperiment = (project: string) => () => {
+    this.setState({ createExperimentProject: project });
   };
 
   handleDeleteExperiment = (experimentId: string, experimentName: string) => () => {
@@ -107,9 +180,7 @@ export class ExperimentListView extends Component<Props, State> {
   };
 
   handleCloseCreateExperimentModal = () => {
-    this.setState({
-      showCreateExperimentModal: false,
-    });
+    this.setState({ createExperimentProject: undefined });
   };
 
   handleCloseDeleteExperimentModal = () => {
@@ -126,6 +197,11 @@ export class ExperimentListView extends Component<Props, State> {
     });
     // reset
     this.updateSelectedExperiment('0', '');
+  };
+
+  handleProjectsChanged = () => {
+    this.setState({ showCreateProjectModal: false, deleteProjectName: undefined });
+    this.props.onProjectsChange?.();
   };
 
   // Add a key if it does not exist, remove it if it does
@@ -153,9 +229,94 @@ export class ExperimentListView extends Component<Props, State> {
     }
   };
 
-  renderListItem: ListRowRenderer = ({ index, key, style, parent }) => {
-    // Use the parents props to index.
-    const item = parent.props['data'][index];
+  // ---- rendering ----
+
+  renderProjectRow = (row: Extract<ListRow, { kind: 'project' }>, key: string, style: React.CSSProperties) => {
+    const { theme } = this.props.designSystemThemeApi;
+    const label = row.name === UNASSIGNED ? 'No project' : row.name;
+    return (
+      <div
+        css={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: theme.spacing.xs,
+          paddingLeft: theme.spacing.xs,
+          paddingRight: theme.spacing.xs,
+          borderLeft: 'solid transparent',
+          borderLeftWidth: 4,
+          fontSize: theme.typography.fontSizeBase,
+          svg: {
+            width: 14,
+            height: 14,
+          },
+        }}
+        data-testid="project-list-item"
+        key={key}
+        style={style}
+      >
+        <button
+          type="button"
+          onClick={this.handleToggleProject(row.name)}
+          aria-expanded={!row.collapsed}
+          title={row.description || label}
+          css={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: theme.spacing.xs,
+            flex: 1,
+            minWidth: 0,
+            padding: 0,
+            border: 'none',
+            background: 'none',
+            cursor: 'pointer',
+            color: 'inherit',
+            font: 'inherit',
+          }}
+          data-testid="project-toggle"
+        >
+          {row.collapsed ? <ChevronRightIcon /> : <ChevronDownIcon />}
+          {row.collapsed ? <FolderIcon /> : <FolderOpenIcon />}
+          <Typography.Text
+            bold
+            color={row.name === UNASSIGNED ? 'secondary' : undefined}
+            css={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+          >
+            {label}
+          </Typography.Text>
+          <Typography.Text color="secondary">{row.count}</Typography.Text>
+        </button>
+        {row.registered && (
+          <Tooltip
+            componentId="mlflow.experiment_list_view.new_experiment_button.tooltip"
+            content={`New experiment in ${row.name}`}
+          >
+            <Button
+              type="link"
+              componentId="mlflow.experiment_list_view.new_experiment_button"
+              icon={<PlusCircleIcon />}
+              onClick={this.handleCreateExperiment(row.name)}
+              data-testid="create-experiment-button"
+              size="small"
+            />
+          </Tooltip>
+        )}
+        {row.registered && row.count === 0 && (
+          <Tooltip componentId="mlflow.experiment_list_view.delete_project_button.tooltip" content="Delete project">
+            <Button
+              type="link"
+              componentId="mlflow.experiment_list_view.delete_project_button"
+              icon={<TrashIcon />}
+              onClick={() => this.setState({ deleteProjectName: row.name })}
+              data-testid="delete-project-button"
+              size="small"
+            />
+          </Tooltip>
+        )}
+      </div>
+    );
+  };
+
+  renderExperimentRow = (item: ExperimentEntity, key: string, style: React.CSSProperties) => {
     const { activeExperimentIds } = this.props;
     const isActive = activeExperimentIds.includes(item.experimentId);
     const dataTestId = isActive ? 'active-experiment-list-item' : 'experiment-list-item';
@@ -167,8 +328,7 @@ export class ExperimentListView extends Component<Props, State> {
         css={{
           display: 'flex',
           alignItems: 'center',
-          // gap: theme.spacing.xs,
-          paddingLeft: theme.spacing.xs,
+          paddingLeft: theme.spacing.lg,
           paddingRight: theme.spacing.xs,
           borderLeft: isActive ? `solid ${theme.colors.primary}` : 'solid transparent',
           borderLeftWidth: 4,
@@ -225,30 +385,38 @@ export class ExperimentListView extends Component<Props, State> {
     );
   };
 
+  renderListItem: ListRowRenderer = ({ index, key, style, parent }) => {
+    // Use the parents props to index.
+    const row: ListRow = parent.props['data'][index];
+    return row.kind === 'project'
+      ? this.renderProjectRow(row, key, style)
+      : this.renderExperimentRow(row.experiment, key, style);
+  };
+
   unHide = () => this.setState({ hidden: false });
   hide = () => this.setState({ hidden: true });
 
   render() {
     const { hidden } = this.state;
-    const { activeExperimentIds, designSystemThemeApi } = this.props;
+    const { activeExperimentIds, designSystemThemeApi, projects = [] } = this.props;
     const { theme } = designSystemThemeApi;
 
     if (hidden) {
       return (
-        <Tooltip content="Show experiment list" componentId="mlflow.experiment_list_view.show_experiments.tooltip">
+        <Tooltip content="Show project list" componentId="mlflow.experiment_list_view.show_experiments.tooltip">
           <Button
             componentId="mlflow.experiment_list_view.show_experiments"
             icon={<CaretDownSquareIcon />}
             onClick={this.unHide}
             css={{ svg: { transform: 'rotate(-90deg)' } }}
-            title="Show experiment list"
+            title="Show project list"
           />
         </Tooltip>
       );
     }
 
     const { searchInput } = this.state;
-    const filteredExperiments = this.filterExperiments(searchInput);
+    const rows = this.buildRows();
 
     return (
       <div
@@ -269,8 +437,9 @@ export class ExperimentListView extends Component<Props, State> {
         }}
       >
         <CreateExperimentModal
-          isOpen={this.state.showCreateExperimentModal}
+          isOpen={this.state.createExperimentProject !== undefined}
           onClose={this.handleCloseCreateExperimentModal}
+          project={this.state.createExperimentProject ?? ''}
         />
         <DeleteExperimentModal
           isOpen={this.state.showDeleteExperimentModal}
@@ -285,6 +454,20 @@ export class ExperimentListView extends Component<Props, State> {
           experimentId={this.state.selectedExperimentId}
           experimentName={this.state.selectedExperimentName}
         />
+        {this.state.showCreateProjectModal && (
+          <CreateProjectModal
+            existingNames={projects.map((project) => project.name)}
+            onClose={() => this.setState({ showCreateProjectModal: false })}
+            onCreated={this.handleProjectsChanged}
+          />
+        )}
+        {this.state.deleteProjectName !== undefined && (
+          <DeleteProjectModal
+            name={this.state.deleteProjectName}
+            onClose={() => this.setState({ deleteProjectName: undefined })}
+            onDeleted={this.handleProjectsChanged}
+          />
+        )}
         <div
           css={{
             display: 'flex',
@@ -294,33 +477,33 @@ export class ExperimentListView extends Component<Props, State> {
           }}
         >
           <Typography.Title level={2} style={{ margin: 0 }}>
-            Experiments
+            Projects
           </Typography.Title>
           <div>
-            <Tooltip componentId="mlflow.experiment_list_view.new_experiment_button.tooltip" content="New experiment">
+            <Tooltip componentId="mlflow.experiment_list_view.new_project_button.tooltip" content="New project">
               <Button
-                componentId="mlflow.experiment_list_view.new_experiment_button"
+                componentId="mlflow.experiment_list_view.new_project_button"
                 icon={<PlusCircleIcon />}
-                onClick={this.handleCreateExperiment}
-                title="New Experiment"
-                data-testid="create-experiment-button"
+                onClick={() => this.setState({ showCreateProjectModal: true })}
+                title="New Project"
+                data-testid="create-project-button"
               />
             </Tooltip>
-            <Tooltip componentId="mlflow.experiment_list_view.hide_button.tooltip" content="Hide experiment list">
+            <Tooltip componentId="mlflow.experiment_list_view.hide_button.tooltip" content="Hide project list">
               <Button
                 componentId="mlflow.experiment_list_view.hide_button"
                 icon={<CaretDownSquareIcon />}
                 onClick={this.hide}
                 css={{ svg: { transform: 'rotate(90deg)' } }}
-                title="Hide experiment list"
+                title="Hide project list"
               />
             </Tooltip>
           </div>
         </div>
         <Input
           componentId="mlflow.experiment_list_view.search_input"
-          placeholder="Search experiments"
-          aria-label="search experiments"
+          placeholder="Search projects and experiments"
+          aria-label="search projects and experiments"
           value={searchInput}
           onChange={this.handleSearchInputChange}
           data-testid="search-experiment-input"
@@ -330,13 +513,13 @@ export class ExperimentListView extends Component<Props, State> {
             {({ width, height }) => (
               <VList
                 rowRenderer={this.renderListItem}
-                data={filteredExperiments}
+                data={rows}
                 ref={this.bindListRef}
                 rowHeight={32}
                 overscanRowCount={10}
                 height={height}
                 width={width}
-                rowCount={filteredExperiments.length}
+                rowCount={rows.length}
               />
             )}
           </AutoSizer>

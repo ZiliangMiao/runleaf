@@ -7,6 +7,6 @@ Modules:
 - ``evaluation_registry``: benchmark evaluations of model files on registered dataset versions.
 - ``evaluation_api``: evaluation REST endpoints.
 - ``benchmark_api``: per-experiment benchmark comparison built from evaluations.
-- ``run_api``: project-wide run numbers allocated by the server.
+- ``project_api``: projects, the experiments they own and their server-allocated run numbers.
 - ``monitor_history``: run monitor history.
 """

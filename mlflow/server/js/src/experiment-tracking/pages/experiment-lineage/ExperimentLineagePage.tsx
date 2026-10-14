@@ -98,14 +98,14 @@ const ExperimentLineagePage = ({ experimentId }: { experimentId: string }) => {
     const projects = new Set(
       (experiments.data ?? [])
         .filter((experiment) => experimentIds.includes(experiment.experimentId))
-        .map((experiment) => buildExperimentProject(experiment.name))
+        .map((experiment) => buildExperimentProject(experiment))
         .filter((project): project is string => Boolean(project)),
     );
     return [
       ...new Set([
         ...experimentIds,
         ...(experiments.data ?? [])
-          .filter((experiment) => projects.has(buildExperimentProject(experiment.name) ?? ''))
+          .filter((experiment) => projects.has(buildExperimentProject(experiment) ?? ''))
           .map((experiment) => experiment.experimentId),
       ]),
     ].sort();

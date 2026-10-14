@@ -31,6 +31,21 @@ afterAll(() => {
   jest.restoreAllMocks();
 });
 
+const inProject = (project: string) => [{ key: 'project', value: project }] as any;
+
+const projectExperiments = [
+  Fixtures.createExperiment({ experimentId: '1', name: 'k23', tags: inProject('deepdet') }),
+  Fixtures.createExperiment({ experimentId: '2', name: 'k1898', tags: inProject('deepcls') }),
+  Fixtures.createExperiment({ experimentId: '3', name: 'k40', tags: inProject('deepdet') }),
+  Fixtures.createExperiment({ experimentId: '4', name: 'loose' }),
+];
+
+const projects = [
+  { name: 'deepcls', description: null, created_at: 0 },
+  { name: 'deepdet', description: 'Detection', created_at: 0 },
+  { name: 'empty', description: null, created_at: 0 },
+];
+
 // Need to mock this since the hoc doesn't pick up theme
 const designSystemThemeApi: DesignSystemThemeInterface = {
   theme: {
@@ -78,10 +93,57 @@ test('If searchInput is set to "Test" and default experiment is active then no a
   expect(screen.queryAllByTestId('active-experiment-list-item')).toHaveLength(0);
 });
 
-test('If button to create experiment is pressed then open CreateExperimentModal', async () => {
-  mountComponent({ experiments: Fixtures.experiments, activeExperimentIds: ['0'] });
-  await userEvent.click(screen.getByTestId('create-experiment-button'));
-  expect(screen.getByText('Create Experiment')).toBeInTheDocument();
+test('Experiments are grouped under their projects, then experiments without one', () => {
+  mountComponent({ experiments: projectExperiments, projects, activeExperimentIds: ['1'] });
+  const rows = screen.getAllByTestId(/^(project-list-item|(active-)?experiment-list-item)$/);
+  expect(rows.map((row) => row.textContent)).toEqual([
+    'deepcls1',
+    'k1898',
+    'deepdet2',
+    'k23',
+    'k40',
+    'empty0',
+    'No project1',
+    'loose',
+  ]);
+});
+
+test('Collapsing a project hides its experiments', async () => {
+  mountComponent({ experiments: projectExperiments, projects, activeExperimentIds: ['1'] });
+  await userEvent.click(screen.getAllByTestId('project-toggle')[1]);
+  expect(screen.queryByText('k23')).not.toBeInTheDocument();
+  expect(screen.getByText('k1898')).toBeInTheDocument();
+});
+
+test('Searching keeps matching experiments and every experiment of a matching project', () => {
+  mountComponent({ experiments: projectExperiments, projects, activeExperimentIds: ['1'] });
+  const input = screen.getByTestId('search-experiment-input');
+  fireEvent.change(input, { target: { value: 'k4' } });
+  expect(
+    screen.getAllByTestId(/^(project-list-item|(active-)?experiment-list-item)$/).map((row) => row.textContent),
+  ).toEqual(['deepdet2', 'k40']);
+  fireEvent.change(input, { target: { value: 'deepcls' } });
+  expect(
+    screen.getAllByTestId(/^(project-list-item|(active-)?experiment-list-item)$/).map((row) => row.textContent),
+  ).toEqual(['deepcls1', 'k1898']);
+});
+
+test('Only registered projects offer new experiments, and only empty ones can be deleted', () => {
+  mountComponent({ experiments: projectExperiments, projects, activeExperimentIds: ['1'] });
+  expect(screen.getAllByTestId('create-experiment-button')).toHaveLength(3);
+  expect(screen.getAllByTestId('delete-project-button')).toHaveLength(1);
+});
+
+test('If button to create experiment is pressed then open CreateExperimentModal for that project', async () => {
+  mountComponent({ experiments: projectExperiments, projects, activeExperimentIds: ['1'] });
+  await userEvent.click(screen.getAllByTestId('create-experiment-button')[1]);
+  expect(screen.getByText('Create Experiment in deepdet')).toBeInTheDocument();
+});
+
+test('If button to create project is pressed then open CreateProjectModal', async () => {
+  mountComponent({ experiments: projectExperiments, projects, activeExperimentIds: ['1'] });
+  await userEvent.click(screen.getByTestId('create-project-button'));
+  expect(screen.getByText('Create project')).toBeInTheDocument();
 });
 
 test('If button to delete experiment is pressed then open DeleteExperimentModal', async () => {
@@ -120,7 +182,7 @@ test('should render when both experiments and activeExperimentIds are empty', ()
   });
 
   // Get the sidebar header as proof that the component rendered
-  expect(screen.getByText('Experiments')).toBeInTheDocument();
+  expect(screen.getByText('Projects')).toBeInTheDocument();
 });
 
 test('virtual list should not render everything when there are many experiments', () => {
