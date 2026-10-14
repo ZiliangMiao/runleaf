@@ -133,14 +133,16 @@ def serve_get_logged_model_artifact(model_id: str):
     return get_logged_model_artifact_handler(model_id)
 
 
-# Deeplore: datasets, evaluations and projects.
+# Deeplore: datasets, evaluations, projects and hardware status.
 from mlflow.deeplore.dataset_api import register_dataset_routes
 from mlflow.deeplore.evaluation_api import register_evaluation_routes
+from mlflow.deeplore.hardware_api import register_hardware_routes
 from mlflow.deeplore.project_api import register_project_routes
 
 register_dataset_routes(app)
 register_evaluation_routes(app)
 register_project_routes(app)
+register_hardware_routes(app)
 
 
 # We expect the react app to be built assuming it is hosted at /static-files, so that requests for

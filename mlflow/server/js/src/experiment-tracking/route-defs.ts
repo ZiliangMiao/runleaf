@@ -76,4 +76,9 @@ export const getRouteDefs = () => [
     element: createLazyRouteElement(() => import('./pages/datasets/DatasetsPage')),
     pageId: 'mlflow.datasets',
   },
+  {
+    path: RoutePaths.hardwarePage,
+    element: createLazyRouteElement(() => import('./pages/hardware/HardwarePage')),
+    pageId: 'mlflow.hardware',
+  },
 ];

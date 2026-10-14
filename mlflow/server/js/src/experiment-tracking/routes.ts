@@ -64,6 +64,10 @@ export class RoutePaths {
   static get datasetsPage() {
     return createMLflowRoutePath('/datasets');
   }
+  /** Route path for the tracking server's live hardware status. */
+  static get hardwarePage() {
+    return createMLflowRoutePath('/hardware');
+  }
 }
 
 // Concrete routes and functions for generating parametrized paths
@@ -232,6 +236,11 @@ class Routes {
   /** Route for Deeplore dataset version releases. */
   static get datasetsPageRoute() {
     return RoutePaths.datasetsPage;
+  }
+
+  /** Route for the tracking server's live hardware status. */
+  static get hardwarePageRoute() {
+    return RoutePaths.hardwarePage;
   }
 }
 

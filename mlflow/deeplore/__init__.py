@@ -8,5 +8,6 @@ Modules:
 - ``evaluation_api``: evaluation REST endpoints.
 - ``benchmark_api``: per-experiment benchmark comparison built from evaluations.
 - ``project_api``: projects, the experiments they own and their server-allocated run numbers.
+- ``hardware_api``: live CPU, memory, disk and GPU status of the server's host through nvitop.
 - ``monitor_history``: run monitor history.
 """

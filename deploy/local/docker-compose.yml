@@ -37,6 +37,19 @@ services:
       DEEPLORE_DATASET_REPOS: /data/Projects/deepdet-dataset     # os.pathsep-separated roots
       # The repo's pre-commit hook needs the dataset toolchain, absent from this image.
       DEEPLORE_DATASET_SKIP_GIT_HOOKS: "true"
+      # --- hardware page ---
+      # label=path: the host's / holds the mounted .gitconfig, its /data holds /data/Projects.
+      DEEPLORE_HARDWARE_DISKS: /=/home/bld/.gitconfig:/data=/data/Projects
+    # --- hardware page ---
+    # Host PIDs, plus the host's user names, let GPU processes show their user and command.
+    pid: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [utility]                            # NVML only, no CUDA
     volumes:
       - /data/Projects/runleaf:/opt/deeplore-mlflow:ro
       - /data/Projects/mlflow/.local/tracking-server:/data/Projects/mlflow/.local/tracking-server
@@ -46,6 +59,9 @@ services:
       - /data/cache/bld/dvc:/data/cache/bld/dvc
       - /home/bld/.ssh:/home/bld/.ssh:ro
       - /home/bld/.gitconfig:/home/bld/.gitconfig:ro
+      # --- hardware page ---
+      - /etc/passwd:/etc/passwd:ro
+      - /etc/group:/etc/group:ro
     command:
       - /bin/sh
       - -c

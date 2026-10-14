@@ -18,6 +18,7 @@ const classNames = {
 const isExperimentsActive = (location: Location) => matchPath('/experiments/*', location.pathname);
 const isModelsActive = (location: Location) => matchPath('/models/*', location.pathname);
 const isDatasetsActive = (location: Location) => matchPath('/datasets/*', location.pathname);
+const isHardwareActive = (location: Location) => matchPath('/hardware/*', location.pathname);
 
 export const MlflowHeader = ({
   isDarkTheme = false,
@@ -93,6 +94,12 @@ export const MlflowHeader = ({
           style={isDatasetsActive(location) ? classNames.activeNavLink : undefined}
         >
           Datasets
+        </Link>
+        <Link
+          to={ExperimentTrackingRoutes.hardwarePageRoute}
+          style={isHardwareActive(location) ? classNames.activeNavLink : undefined}
+        >
+          Hardware
         </Link>
       </div>
       <div css={{ flex: 1 }} />
