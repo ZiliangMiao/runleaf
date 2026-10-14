@@ -2031,10 +2031,6 @@
     "defaultMessage": "Open dataset",
     "description": "Text for the HTTP/HF location link in the experiment run dataset drawer"
   },
-  "VzuUre": {
-    "defaultMessage": "Supported formats: image, text, html, pdf, audio, geojson files",
-    "description": "Text to explain users which formats are supported to display the artifacts"
-  },
   "W8bOkn": {
     "defaultMessage": "250",
     "description": "Label for 250 first runs visible in run count selector within runs compare configuration modal"
@@ -2371,6 +2367,10 @@
     "defaultMessage": "Add/edit alias for prompt version {version}",
     "description": "Title for the edit aliases modal on the registered prompt details page"
   },
+  "b80OK8": {
+    "defaultMessage": "Hide all",
+    "description": "Run monitor legend button to hide all metric series"
+  },
   "b8rdDM": {
     "defaultMessage": "Models",
     "description": "A button navigating to logged models table on the experiment page"
@@ -2407,6 +2407,10 @@
     "defaultMessage": "On",
     "description": "Runs charts > line chart > ignore outliers > on setting label"
   },
+  "bh+Ojs": {
+    "defaultMessage": "Show {metric}",
+    "description": "Run monitor legend action for a hidden metric"
+  },
   "bi26D5": {
     "defaultMessage": "Run ID:",
     "description": "Text for run ID header in the main table in the model comparison page"
@@ -2426,6 +2430,10 @@
   "c0slEY": {
     "defaultMessage": "Click into an individual run to see all models associated with it",
     "description": "MLflow experiment detail page > runs table > tooltip on ML \"Models\" column header"
+  },
+  "c3vx8X": {
+    "defaultMessage": "Hide {metric}",
+    "description": "Run monitor legend action for a visible metric"
   },
   "c4KA32": {
     "defaultMessage": "An error occurred while attempting to fetch the trace data. Please wait a moment and try again.",
@@ -2634,6 +2642,10 @@
   "eeLqSn": {
     "defaultMessage": "Submit",
     "description": "Experiment page > artifact compare view > \"add new row\" modal submit button label"
+  },
+  "eljkMV": {
+    "defaultMessage": "Show all",
+    "description": "Run monitor legend button to show all metric series"
   },
   "erqoIC": {
     "defaultMessage": "Run Name:",
@@ -2990,6 +3002,10 @@
   "kWUhea": {
     "defaultMessage": "Params",
     "description": "Label for 'params' option group in the compare runs chart configure modal"
+  },
+  "kdJC4q": {
+    "defaultMessage": "Supported formats: image, text, html, pdf, audio, geojson files, and model files such as ONNX or PyTorch, opened in Netron",
+    "description": "Text to explain users which formats are supported to display the artifacts"
   },
   "kdTxC2": {
     "defaultMessage": "Disable run grouping in order to access the evaluation view",
@@ -3766,6 +3782,10 @@
   "xUnYdk": {
     "defaultMessage": "Save",
     "description": "experiment page > description modal > save button"
+  },
+  "xejlDX": {
+    "defaultMessage": "Copy failed",
+    "description": "Tooltip text shown when copy operation fails"
   },
   "xmPKKq": {
     "defaultMessage": "Model Version:",

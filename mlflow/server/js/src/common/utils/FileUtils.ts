@@ -55,6 +55,52 @@ export const HTML_EXTENSIONS = new Set(['html']);
 export const MAP_EXTENSIONS = new Set(['geojson']);
 export const PDF_EXTENSIONS = new Set(['pdf']);
 export const DATA_EXTENSIONS = new Set(['csv', 'tsv']);
+// Model formats opened in Netron; generic extensions (json, bin, zip, pkl) and mlmodel, taken by MLflow's
+// MLmodel file, keep their usual preview.
+export const NETRON_EXTENSIONS = new Set([
+  'onnx',
+  'ort',
+  'pt',
+  'pt2',
+  'pte',
+  'pth',
+  'ptl',
+  't7',
+  'safetensors',
+  'tflite',
+  'tfl',
+  'lite',
+  'pb',
+  'pbtxt',
+  'h5',
+  'hd5',
+  'hdf5',
+  'keras',
+  'prototxt',
+  'caffemodel',
+  'mnn',
+  'ncnn',
+  'param',
+  'tnnproto',
+  'tmfile',
+  'mge',
+  'rknn',
+  'kmodel',
+  'espdl',
+  'xmodel',
+  'dlc',
+  'uff',
+  'armnn',
+  'circle',
+  'mindir',
+  'pdmodel',
+  'pdiparams',
+  'pdparams',
+  'gguf',
+  'tosa',
+  'mlir',
+  'mlirbc',
+]);
 // Audio extensions supported by wavesurfer.js
 // Source https://github.com/katspaugh/wavesurfer.js/discussions/2703#discussioncomment-5259526
 export const AUDIO_EXTENSIONS = new Set(['m4a', 'mp3', 'mp4', 'wav', 'aac', 'wma', 'flac', 'opus', 'ogg']);

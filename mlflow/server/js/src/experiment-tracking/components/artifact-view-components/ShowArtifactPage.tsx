@@ -7,6 +7,7 @@
 
 import React, { Component } from 'react';
 import {
+  getBasename,
   getExtension,
   IMAGE_EXTENSIONS,
   TEXT_EXTENSIONS,
@@ -15,6 +16,7 @@ import {
   PDF_EXTENSIONS,
   DATA_EXTENSIONS,
   AUDIO_EXTENSIONS,
+  NETRON_EXTENSIONS,
 } from '../../../common/utils/FileUtils';
 import { getLoggedModelPathsFromTags, getLoggedTablesFromTags } from '../../../common/utils/TagUtils';
 import { ONE_MB } from '../../constants';
@@ -25,6 +27,7 @@ import ShowArtifactHtmlView from './ShowArtifactHtmlView';
 import { LazyShowArtifactPdfView } from './LazyShowArtifactPdfView';
 import { LazyShowArtifactTableView } from './LazyShowArtifactTableView';
 import ShowArtifactLoggedModelView from './ShowArtifactLoggedModelView';
+import ShowArtifactNetronView from './ShowArtifactNetronView';
 import previewIcon from '../../../common/static/preview-icon.png';
 import warningSvg from '../../../common/static/warning.svg';
 import { ModelRegistryRoutes } from '../../../model-registry/routes';
@@ -71,6 +74,14 @@ class ShowArtifactPage extends Component<ShowArtifactPageProps> {
           const { name: registeredModelName, version } = registeredModel;
           registeredModelLink = ModelRegistryRoutes.getModelVersionPageRoute(registeredModelName, version);
         }
+      }
+      // Netron streams the model itself and shows its own progress, so the preview size limit does not apply.
+      const isNetronFile =
+        !this.props.isDirectory &&
+        getBasename(this.props.path).includes('.') &&
+        NETRON_EXTENSIONS.has(normalizedExtension.toLowerCase());
+      if (isNetronFile) {
+        return <ShowArtifactNetronView {...commonArtifactProps} size={this.props.size} />;
       }
       // @ts-expect-error TS(2532): Object is possibly 'undefined'.
       if (this.props.size > MAX_PREVIEW_ARTIFACT_SIZE_MB * ONE_MB) {
@@ -131,7 +142,7 @@ const getSelectFileView = () => {
         }
         description={
           <FormattedMessage
-            defaultMessage="Supported formats: image, text, html, pdf, audio, geojson files"
+            defaultMessage="Supported formats: image, text, html, pdf, audio, geojson files, and model files such as ONNX or PyTorch, opened in Netron"
             description="Text to explain users which formats are supported to display the artifacts"
           />
         }

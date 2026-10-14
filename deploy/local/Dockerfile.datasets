@@ -1,5 +1,6 @@
 # Tracking server image able to release datasets: the stock MLflow image plus
-# git, an ssh client and dvc, and nvitop for the hardware page.
+# git, an ssh client and dvc, nvitop for the hardware page and netron for the
+# model viewer.
 #
 #   docker build -f deploy/local/Dockerfile.datasets -t deeplore-mlflow-tracking:3.1.4-datasets deploy/local
 FROM ghcr.io/mlflow/mlflow:v3.1.4
@@ -19,5 +20,5 @@ RUN sed -i -e '/^deb /d' -e 's|^# deb |deb |' /etc/apt/sources.list \
     && ln -s /opt/dvc/bin/dvc /usr/local/bin/dvc \
     && useradd --uid 1000 --create-home --home-dir /home/bld bld
 
-# The server imports it, so it shares MLflow's environment.
-RUN pip install --no-cache-dir "nvitop==1.7.1"
+# The server imports both, so they share MLflow's environment.
+RUN pip install --no-cache-dir "nvitop==1.7.1" "netron==9.3.1"

@@ -14,6 +14,7 @@ import { LazyShowArtifactMapView } from './LazyShowArtifactMapView';
 import ShowArtifactHtmlView from './ShowArtifactHtmlView';
 import { LazyShowArtifactTableView } from './LazyShowArtifactTableView';
 import ShowArtifactLoggedModelView from './ShowArtifactLoggedModelView';
+import ShowArtifactNetronView, { buildNetronUrl } from './ShowArtifactNetronView';
 import {
   IMAGE_EXTENSIONS,
   TEXT_EXTENSIONS,
@@ -21,6 +22,7 @@ import {
   HTML_EXTENSIONS,
   DATA_EXTENSIONS,
   AUDIO_EXTENSIONS,
+  NETRON_EXTENSIONS,
 } from '../../../common/utils/FileUtils';
 import { RunTag } from '../../sdk/MlflowMessages';
 import { LazyShowArtifactAudioView } from './LazyShowArtifactAudioView';
@@ -145,6 +147,34 @@ describe('ShowArtifactPage', () => {
       wrapper.setProps({ path: `image.${ext}`, runUuid: 'runId' });
       expect(wrapper.find(LazyShowArtifactTableView).length).toBe(1);
     });
+  });
+  test('should render netron view for model files of any size', () => {
+    NETRON_EXTENSIONS.forEach((ext) => {
+      wrapper.setProps({ path: `checkpoints/best.${ext}`, runUuid: 'runId', size: 200000000 });
+      expect(wrapper.find(ShowArtifactNetronView).length).toBe(1);
+    });
+    const src = wrapper.find('iframe').prop('src');
+    const params = new URL(src).searchParams;
+    expect(new URL(src).pathname).toBe('/netron/index.html');
+    expect(params.get('identifier')).toBe('best.mlirbc');
+    expect(params.get('url')).toBe(
+      new URL('get-artifact?path=checkpoints%2Fbest.mlirbc&run_uuid=runId', window.location.href).toString(),
+    );
+  });
+  test('should not render netron view for model-named folders or extension-less files', () => {
+    wrapper.setProps({ path: 'deployment/model.onnx', runUuid: 'runId', isDirectory: true });
+    expect(wrapper.find(ShowArtifactNetronView).length).toBe(0);
+    wrapper.setProps({ path: 'deployment/onnx', runUuid: 'runId', isDirectory: false });
+    expect(wrapper.find(ShowArtifactNetronView).length).toBe(0);
+    expect(wrapper.text().includes('Select a file to preview')).toBe(true);
+  });
+  test('netron url follows the page location, including a static prefix', () => {
+    const url = new URL(
+      buildNetronUrl('get-artifact?path=a%2Fm.onnx&run_uuid=r', 'a/m.onnx', 'http://host/prefix/#/experiments/1'),
+    );
+    expect(url.origin + url.pathname).toBe('http://host/prefix/netron/index.html');
+    expect(url.searchParams.get('url')).toBe('http://host/prefix/get-artifact?path=a%2Fm.onnx&run_uuid=r');
+    expect(url.searchParams.get('identifier')).toBe('m.onnx');
   });
   test('should render audio view for common audio data extensions', () => {
     AUDIO_EXTENSIONS.forEach((ext) => {

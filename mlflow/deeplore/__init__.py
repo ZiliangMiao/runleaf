@@ -9,5 +9,6 @@ Modules:
 - ``benchmark_api``: per-experiment benchmark comparison built from evaluations.
 - ``project_api``: projects, the experiments they own and their server-allocated run numbers.
 - ``hardware_api``: live CPU, memory, disk and GPU status of the server's host through nvitop.
+- ``netron_api``: the Netron model viewer, served for model artifacts.
 - ``monitor_history``: run monitor history.
 """
